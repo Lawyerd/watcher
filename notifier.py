@@ -1,51 +1,50 @@
 from plyer import notification
+import datetime
 
 class StatusNotifier:
     def __init__(self):
-        self.app_name = "CNC Watcher"
-        # 각 기계별 이전 상태를 저장하기 위한 딕셔너리
-        self.last_statuses = {} 
-        self.last_alarms = {}
+        self.last_states = {}
 
     def check_and_notify(self, machine_name, current_status, is_alarm, enabled):
-        if not enabled:
-            return
+        if not enabled: return None
 
-        # 1. 초기 상태 설정 (딕셔너리에 기계가 없으면 추가)
-        if machine_name not in self.last_statuses:
-            self.last_statuses[machine_name] = current_status
-            self.last_alarms[machine_name] = is_alarm
-            return
+        # 이전 상태 가져오기
+        prev = self.last_states.get(machine_name, {"status": "OFFLINE", "alarm": False})
+        
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        popup_trigger = None
 
-        old_status = self.last_statuses[machine_name]
-        old_alarm = self.last_alarms[machine_name]
+        # 1. 🚨 기계 알람 (최우선순위)
+        if is_alarm and not prev["alarm"]:
+            title = f"🚨 [긴급 알람] {machine_name}"
+            msg = f"발생 시간: {now}\n즉시 장비 상태를 확인하십시오!"
+            self.send_toast(title, msg)
+            popup_trigger = "ALARM_POPUP"
 
-        # 2. 알람 상태 변화 감지 (정상 -> 알람)
-        if is_alarm and not old_alarm:
-            self.send(f"⚠️ {machine_name} 알람 발생", "기계에 알람이 발생했습니다. 즉시 확인하세요!")
+        # 2. ✅ 가공 완료 (RUN -> STOP/IDLE)
+        elif "RUN" not in current_status and "RUN" in prev["status"]:
+            title = f"✅ [가공 완료] {machine_name}"
+            msg = f"완료 시간: {now}\n다음 가공 준비가 가능합니다."
+            self.send_toast(title, msg)
 
-        # 3. 운전 상태 변화 감지
-        if old_status != current_status:
-            if current_status == "RUN":
-                self.send(f"▶️ {machine_name} 가공 시작", "프로그램 운전을 시작했습니다.")
-            elif current_status == "HOLD(M00)":
-                self.send(f"⏸️ {machine_name} 일시 정지", "M00 또는 피드 홀드로 가공이 멈췄습니다.")
-            elif current_status == "STOP" and old_status == "RUN":
-                self.send(f"✅ {machine_name} 가공 완료", "모든 공정이 끝나고 장비가 정지했습니다.")
-            elif current_status == "OFFLINE":
-                self.send(f"🔌 {machine_name} 연결 끊김", "PC와 기계의 통신이 중단되었습니다.")
+        # 3. ⏸️ M코드 정지 (RUN -> HOLD)
+        elif "HOLD" in current_status and "RUN" in prev["status"]:
+            title = f"⏸️ [작업 정지] {machine_name}"
+            msg = f"정지 시간: {now}\nM00/M01 코드가 감지되었습니다."
+            self.send_toast(title, msg)
 
-        # 4. 현재 상태를 이전 상태로 저장
-        self.last_statuses[machine_name] = current_status
-        self.last_alarms[machine_name] = is_alarm
+        # 상태 업데이트
+        self.last_states[machine_name] = {"status": current_status, "alarm": is_alarm}
+        return popup_trigger
 
-    def send(self, title, message):
+    def send_toast(self, title, message):
         try:
             notification.notify(
                 title=title,
                 message=message,
-                app_name=self.app_name,
-                timeout=5
+                app_name="CNC Watcher",
+                app_icon=None,
+                timeout=30  # 알람 유지 시간을 30초로 상향 조정
             )
         except Exception as e:
             print(f"알림 전송 실패: {e}")
