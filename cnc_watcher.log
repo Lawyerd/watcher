@@ -1,0 +1,7 @@
+2026-05-11 19:00:50,001 [INFO] fanuc_logic: [DVF5000] 연결 성공
+2026-05-11 19:00:54,790 [WARNING] fanuc_logic: [DVF6500] 연결 실패 (ret=65520)
+2026-05-11 19:03:37,261 [INFO] fanuc_logic: [DVF5000] 연결 성공
+2026-05-11 19:06:49,335 [INFO] fanuc_logic: [DVF5000] 연결 성공
+2026-05-11 19:06:51,975 [INFO] fanuc_logic: [DVF5000] 연결 해제
+2026-05-11 19:06:52,879 [INFO] fanuc_logic: [DVF5000] 연결 성공
+2026-05-11 19:10:09,473 [INFO] fanuc_logic: [DVF5000] 연결 성공
