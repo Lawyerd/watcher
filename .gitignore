@@ -1,0 +1,17 @@
+# Python 관련
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# 빌드 관련 (PyInstaller)
+build/
+dist/
+*.spec
+
+# 설정 및 데이터 (보안을 위해 실제 파일은 제외)
+machines.json
+
+# 라이브러리/시스템 관련
+dll/
