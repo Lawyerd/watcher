@@ -3,7 +3,6 @@ import ctypes
 import os
 import sys
 
-# 🔴 수정 7: 하드코딩된 절대 경로 제거 → 스크립트 위치 기준 상대 경로 사용
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 DLL_DIR      = os.path.join(BASE_DIR, "dll")
 MACHINE_IP   = "192.168.10.108"
@@ -37,7 +36,7 @@ if ret != 0:
     sys.exit(1)
 print(f"✅ 연결 성공\n")
 
-# ── ODBST 구조체 ──────────────────────────────────────────────
+# ── ODBST 구조체 (운전 상태) ──────────────────────────────────
 class ODBST(ctypes.Structure):
     _fields_ = [
         ("dummy",     ctypes.c_short),
@@ -51,22 +50,21 @@ class ODBST(ctypes.Structure):
         ("edit",      ctypes.c_short),
     ]
 
+# ── ODBMACRO 구조체 (공구 번호 읽기용) ──────────────────────────
+class ODBMACRO(ctypes.Structure):
+    _pack_ = 2  # FOCAS C언어 구조체 크기(10바이트)와 완벽히 맞추기 위한 필수 옵션
+    _fields_ = [
+        ("datano",  ctypes.c_short),
+        ("dummy",   ctypes.c_short),
+        ("mcr_val", ctypes.c_int),    # 실제 공구 번호가 들어가는 곳
+        ("dec_val", ctypes.c_short),
+    ]
+
 stat = ODBST()
 ret  = fanuc.cnc_statinfo(handle, ctypes.byref(stat))
 
 if ret == 0:
-    print("─── 운전 상태 (raw값) ───────────────────────")
-    print(f"  dummy    : {stat.dummy}")
-    print(f"  tmmode   : {stat.tmmode}")
-    print(f"  aut      : {stat.aut}")
-    print(f"  run      : {stat.run}")
-    print(f"  motion   : {stat.motion}")
-    print(f"  mstb     : {stat.mstb}")
-    print(f"  emergency: {stat.emergency}")
-    print(f"  alarm    : {stat.alarm}")
-    print(f"  edit     : {stat.edit}")
-
-    print("\n─── 운전 상태 (해석) ────────────────────────")
+    print("─── 운전 상태 (해석) ────────────────────────")
     aut_map = {0:"MDI", 1:"MEM(자동)", 3:"EDIT", 4:"HANDLE", 5:"JOG", 8:"INC", 9:"REF", 10:"REMOTE"}
     run_map = {0:"STOP", 1:"HOLD", 2:"RUN(자동운전중)", 3:"RUN(수동운전중)", 4:"RESTART"}
     print(f"  모드    : {aut_map.get(stat.aut, f'기타({stat.aut})')}")
@@ -75,6 +73,22 @@ if ret == 0:
     print(f"  알람    : {'⚠️  있음' if stat.alarm else '정상'}")
 else:
     print(f"❌ cnc_statinfo 실패 (ret={ret})")
+
+# ── 공구 번호 (매크로 4120번 읽기) ────────────────────────────
+print("\n─── 공구 정보 읽기 ──────────────────────────")
+macro = ODBMACRO()
+# 4120번 매크로 = FANUC 표준 '마지막으로 지령된 T코드'
+ret_macro = fanuc.cnc_rdmacro(handle, ctypes.c_short(4120), ctypes.c_short(10), ctypes.byref(macro))
+
+if ret_macro == 0:
+    real_tool = macro.mcr_val
+    # 소수점 처리 방어 로직 (보통 T코드는 소수점이 없으나 안전을 위해 추가)
+    if macro.dec_val > 0:
+        real_tool = int(real_tool / (10 ** macro.dec_val))
+        
+    print(f"  현재 공구 : T{real_tool:02d}")
+else:
+    print(f"❌ 공구 번호 읽기 실패 (ret={ret_macro})")
 
 fanuc.cnc_freelibhndl(handle)
 print("\n✅ 연결 해제 완료")

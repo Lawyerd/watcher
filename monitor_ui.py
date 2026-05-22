@@ -6,7 +6,7 @@ class AppUI(ctk.CTk):
         super().__init__()
         self.init_width  = 1050
         self.init_height = 650
-        self.title("DN Solutions Machine Watcher v1.9")
+        self.title("DN Solutions Machine Watcher v2.0")
         self.geometry(f"{self.init_width}x{self.init_height}")
         ctk.set_appearance_mode("dark")
 
