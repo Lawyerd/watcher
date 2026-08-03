@@ -32,6 +32,7 @@ class FanucMachine:
         self.port = port
         self.handle = ctypes.c_ushort()
         self.is_connected = False
+        self.want_connected = False   # 사용자가 연결을 원하는 상태 (자동 재연결 기준)
         self.fanuc = ctypes.WinDLL(dll_path) if dll_path else None
         
         self.data = {
@@ -58,17 +59,31 @@ class FanucMachine:
             self.is_connected = False
             self.data["status"] = "OFFLINE"
 
+    def drop_connection(self):
+        """통신 오류(절전 복귀 등) 시 죽은 핸들을 정리하고 오프라인 처리"""
+        try:
+            self.fanuc.cnc_freelibhndl(self.handle)
+        except Exception:
+            pass
+        self.is_connected = False
+        self.data["status"] = "OFFLINE"
+
     def fetch_data(self):
         if not self.is_connected: return
-        
+
         # 1. 운전 상태 및 알람 체크
         stat = ODBST()
-        if self.fanuc.cnc_statinfo(self.handle, ctypes.byref(stat)) == 0:
-            aut_map = {0:"MDI", 1:"MEM", 2:"EDIT", 3:"EDIT", 4:"HNDL", 5:"JOG", 9:"REF", 10:"RMT"}
-            run_map = {0:"STOP", 1:"IDLE", 2:"HOLD(M00)", 3:"RUN", 4:"WARMUP"}
-            self.data["mode"] = aut_map.get(stat.aut, f"E({stat.aut})")
-            self.data["status"] = run_map.get(stat.run, f"CODE({stat.run})")
-            self.data["is_alarm"] = bool(stat.alarm)
+        ret = self.fanuc.cnc_statinfo(self.handle, ctypes.byref(stat))
+        if ret != 0:
+            # 절전 복귀 후 소켓이 죽으면 EW_SOCKET(-16) 등 오류 코드 반환
+            # → 핸들을 버리고 끊김 처리 (재연결은 main 루프가 자동 수행)
+            self.drop_connection()
+            return
+        aut_map = {0:"MDI", 1:"MEM", 2:"EDIT", 3:"EDIT", 4:"HNDL", 5:"JOG", 9:"REF", 10:"RMT"}
+        run_map = {0:"STOP", 1:"IDLE", 2:"HOLD(M00)", 3:"RUN", 4:"WARMUP"}
+        self.data["mode"] = aut_map.get(stat.aut, f"E({stat.aut})")
+        self.data["status"] = run_map.get(stat.run, f"CODE({stat.run})")
+        self.data["is_alarm"] = bool(stat.alarm)
 
         # 2. 사이클 타임 (가공 시간)
         prm_min, prm_msec = IODBPRM(), IODBPRM()

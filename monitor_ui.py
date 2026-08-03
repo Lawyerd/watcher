@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox
 import customtkinter as ctk
 
 # ── 마우스 호버 시 안내 문구를 띄워주는 툴팁 클래스 ──────────
@@ -37,18 +38,13 @@ class AppUI(ctk.CTk):
         super().__init__()
         
         self.init_width = 820
-        calc_height = 120 + (len(machines) * 130)
-        self.init_height = max(300, min(850, calc_height)) 
-        
-        self.needs_scroll = calc_height > 850 
-        
+
         self.title("DN Solutions Machine Watcher v2.0")
-        self.geometry(f"{self.init_width}x{self.init_height}")
-        self.minsize(self.init_width, self.init_height)
-        
+
         ctk.set_appearance_mode("dark")
-        
+
         self.machines = machines
+        self.scroll = None
         self.notify_enabled = tk.BooleanVar(value=True)
         self.widgets = {}
         self.is_hidden = False
@@ -112,13 +108,38 @@ class AppUI(ctk.CTk):
         self.notify_btn.pack(side="right", padx=(0, 5), pady=7)
         self.notify_tooltip = ToolTip(self.notify_btn, "알림: 켜짐")
 
-        # 2. 메인 컨테이너 영역
+        # 🚀 [v2.2 추가] 장비 설정 버튼 (command는 MainController가 연결)
+        self.settings_btn = ctk.CTkButton(
+            self.header, text="⚙️", width=36, height=36,
+            fg_color="transparent", hover_color="#2A2A2A",
+            font=("Segoe UI Emoji", 18)
+        )
+        self.settings_btn.pack(side="right", padx=(0, 5), pady=7)
+        self.settings_tooltip = ToolTip(self.settings_btn, "장비 설정")
+
+        # 2. 메인 컨테이너 영역 (장비 카드)
+        self.build_machine_cards()
+
+    def build_machine_cards(self):
+        """장비 목록 기준으로 카드 UI를 (재)생성. 설정 변경 시에도 호출됨."""
+        if self.scroll is not None:
+            self.scroll.destroy()
+
+        calc_height = 120 + (len(self.machines) * 130)
+        self.init_height = max(300, min(850, calc_height))
+        self.needs_scroll = calc_height > 850
+
+        if not self.is_compact:
+            self.minsize(self.init_width, self.init_height)
+            self.geometry(f"{self.init_width}x{self.init_height}")
+
         if self.needs_scroll:
             self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         else:
             self.scroll = ctk.CTkFrame(self, fg_color="transparent")
-            
+
         self.scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        self.widgets = {}
 
         for m in self.machines:
             card = ctk.CTkFrame(self.scroll, border_width=1, border_color="#333333")
@@ -271,3 +292,96 @@ class AppUI(ctk.CTk):
         ).pack(pady=20)
         ctk.CTkButton(popup, text="확인", width=80, command=popup.destroy).pack()
         self.bell()
+
+
+# ── [v2.2 추가] 장비 추가/삭제 설정 창 ──────────────────────────
+class SettingsDialog(ctk.CTkToplevel):
+    def __init__(self, master, machines_data, on_save):
+        super().__init__(master)
+        self.title("장비 설정")
+        self.geometry("520x420")
+        self.attributes("-topmost", True)
+        self.grab_set()  # 설정 중에는 메인 창 조작 잠금
+        self.on_save = on_save
+        self.rows = []
+
+        # 컬럼 헤더
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", padx=15, pady=(15, 0))
+        for text, w in [("장비명", 140), ("IP 주소", 160), ("포트", 80)]:
+            ctk.CTkLabel(head, text=text, width=w, anchor="w",
+                         text_color="#888888", font=("Malgun Gothic", 11)).pack(side="left", padx=5)
+
+        # 장비 목록 영역
+        self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        for m in machines_data:
+            self.add_row(m["name"], m["ip"], str(m.get("port", 8193)))
+
+        # 하단 버튼
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=15, pady=(0, 15))
+        ctk.CTkButton(bottom, text="＋ 장비 추가", width=110,
+                      fg_color="#2A2A2A", hover_color="#3A3A3A",
+                      command=lambda: self.add_row()).pack(side="left")
+        ctk.CTkButton(bottom, text="저장", width=90, command=self.save).pack(side="right")
+        ctk.CTkButton(bottom, text="취소", width=90,
+                      fg_color="#444444", hover_color="#555555",
+                      command=self.destroy).pack(side="right", padx=(0, 8))
+
+    def add_row(self, name="", ip="", port="8193"):
+        row = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+        row.pack(fill="x", pady=3)
+
+        e_name = ctk.CTkEntry(row, width=140, placeholder_text="예: DVF5000")
+        e_name.pack(side="left", padx=5)
+        e_ip = ctk.CTkEntry(row, width=160, placeholder_text="예: 192.168.10.109")
+        e_ip.pack(side="left", padx=5)
+        e_port = ctk.CTkEntry(row, width=80)
+        e_port.pack(side="left", padx=5)
+
+        if name: e_name.insert(0, name)
+        if ip:   e_ip.insert(0, ip)
+        e_port.insert(0, port)
+
+        del_btn = ctk.CTkButton(row, text="✕", width=32, height=28,
+                                fg_color="#5A2A2A", hover_color="#7A3A3A",
+                                command=lambda: self.delete_row(row))
+        del_btn.pack(side="left", padx=5)
+
+        self.rows.append((row, e_name, e_ip, e_port))
+
+    def delete_row(self, row_frame):
+        self.rows = [r for r in self.rows if r[0] is not row_frame]
+        row_frame.destroy()
+
+    def save(self):
+        data = []
+        seen_ips = set()
+        for _, e_name, e_ip, e_port in self.rows:
+            name = e_name.get().strip()
+            ip   = e_ip.get().strip()
+            port = e_port.get().strip()
+
+            if not name or not ip:
+                messagebox.showwarning("입력 오류", "장비명과 IP 주소를 모두 입력해 주세요.", parent=self)
+                return
+            try:
+                port_num = int(port)
+                if not (1 <= port_num <= 65535): raise ValueError
+            except ValueError:
+                messagebox.showwarning("입력 오류", f"[{name}] 포트는 1~65535 사이의 숫자여야 합니다.", parent=self)
+                return
+            if ip in seen_ips:
+                messagebox.showwarning("입력 오류", f"IP 주소가 중복되었습니다: {ip}", parent=self)
+                return
+            seen_ips.add(ip)
+            data.append({"name": name, "ip": ip, "port": port_num})
+
+        if not data:
+            messagebox.showwarning("입력 오류", "최소 1대 이상의 장비가 필요합니다.", parent=self)
+            return
+
+        self.on_save(data)
+        self.destroy()
