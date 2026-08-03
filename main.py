@@ -165,9 +165,6 @@ class MainController:
 
     def update_loop(self):
         for m in self.machines:
-            w = self.app.widgets.get(m.ip)
-            if not w: continue
-
             if m.is_connected:
                 try: m.fetch_data()
                 except OSError: m.drop_connection()
@@ -176,8 +173,7 @@ class MainController:
                 if m.is_connected:
                     st  = m.data["status"]
                     cyc = m.data["cycle_time"]
-                    
-                    # [v2.0 수정] cycle_time을 파라미터로 추가 전달
+
                     notif_res = self.notifier.check_and_notify(
                         m.name, st, cyc, m.data["is_alarm"], self.app.notify_enabled.get()
                     )
@@ -185,28 +181,16 @@ class MainController:
                     if notif_res == "ALARM_POPUP": self.app.show_emergency_popup(m.name)
 
                     if not self.app.is_hidden:
-                        st_col = "#F1C40F"
-                        if "RUN"  in st: st_col = "#2ECC71"
-                        if m.data["is_alarm"]: st_col = "#E74C3C"
-
-                        w["mode"].configure(text=m.data["mode"], text_color="#3498DB")
-                        w["status"].configure(text=st, text_color=st_col)
-                        w["tool"].configure(text=m.data["tool"], text_color="#E67E22")
-                        w["time"].configure(text=cyc, text_color=("#FFFFFF", "#FFFFFF"))
-                        w["btn"].configure(text="연결 해제", fg_color="#444")
-                        w["c_status"].configure(text=st, text_color=st_col)
-                        w["c_time"].configure(text=cyc, text_color=("#FFFFFF", "#FFFFFF"))
+                        # [v2.3] 상태 반영은 AppUI.apply_status가 일괄 처리
+                        self.app.apply_status(m.ip, m.data["mode"], st, m.data["tool"],
+                                              cyc, m.data["is_alarm"], True)
             else:
                 # [v2.2 추가] 절전 복귀 등으로 끊긴 경우 자동 재연결
                 if m.want_connected:
                     self.try_reconnect(m)
 
                 if not self.app.is_hidden:
-                    for k in ["mode", "status", "tool", "c_status"]:
-                        w[k].configure(text="-", text_color="#444444")
-                    w["time"].configure(text="-", text_color=("#FFFFFF", "#FFFFFF"))
-                    w["c_time"].configure(text="-", text_color=("#FFFFFF", "#FFFFFF"))
-                    w["btn"].configure(text="연결하기", fg_color=["#3B8ED0", "#1F6AA5"])
+                    self.app.apply_status(m.ip, "-", "OFFLINE", "-", "-", False, False)
 
         self.app.after(3000 if self.app.is_hidden else 500, self.update_loop)
 
