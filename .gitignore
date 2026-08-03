@@ -15,3 +15,6 @@ machines.json
 
 # 라이브러리/시스템 관련
 dll/
+# 런타임 로그/이력 (실행 시 생성됨)
+cnc_watcher.log*
+logs/
