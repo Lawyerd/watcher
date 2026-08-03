@@ -195,7 +195,9 @@ class MainController:
         self.app.after(3000 if self.app.is_hidden else 500, self.update_loop)
 
     def try_reconnect(self, m):
-        """UI를 멈추지 않도록 백그라운드 스레드에서 재연결 시도 (10초 간격 제한)"""
+        """자동 재연결 (10초 간격 제한).
+        FOCAS 핸들은 그 핸들을 만든 스레드에서만 유효하므로(다른 스레드에서 쓰면 EW_HANDLE -8),
+        백그라운드 스레드는 TCP 도달성 확인만 하고 실제 연결은 메인 스레드에서 수행한다."""
         if getattr(m, "_reconnecting", False):
             return
         now = time.monotonic()
@@ -204,16 +206,28 @@ class MainController:
         m._last_reconnect_try = now
         m._reconnecting = True
 
-        def _work():
+        def _probe():
             try:
+                s = socket.create_connection((m.ip, m.port), timeout=2)
+                s.close()
+            except OSError:
+                m._reconnecting = False
+                logger.warning(f"[{m.name}] 재연결 대기: 장비 응답 없음 (10초 후 재시도)")
+                return
+            # 도달 가능 확인됨 → 실제 FOCAS 연결은 메인 스레드에서
+            self.app.after(0, lambda: self._finish_reconnect(m))
+
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def _finish_reconnect(self, m):
+        try:
+            if not m.is_connected and m.want_connected:
                 if m.connect():
                     logger.info(f"[{m.name}] 자동 재연결 성공")
                 else:
                     logger.warning(f"[{m.name}] 자동 재연결 실패 (10초 후 재시도)")
-            finally:
-                m._reconnecting = False
-
-        threading.Thread(target=_work, daemon=True).start()
+        finally:
+            m._reconnecting = False
 
 if __name__ == "__main__":
     if is_already_running():
