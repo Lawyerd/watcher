@@ -44,6 +44,21 @@ if os.path.exists(DLL_DIR):
     if hasattr(os, 'add_dll_directory'): os.add_dll_directory(DLL_DIR)
     os.environ['PATH'] = DLL_DIR + os.pathsep + os.environ['PATH']
 
+def draw_watcher_icon(px=512):
+    """[v2.3] 펄스 라인 아이콘: 다크 라운드 사각형 + 초록 심박 라인 (512px 렌더 후 축소)"""
+    img = Image.new('RGBA', (px, px), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    s = px / 64
+    d.rounded_rectangle((2 * s, 2 * s, 62 * s, 62 * s), radius=14 * s, fill="#1C1C21")
+    pts = [(8, 32), (20, 32), (26, 16), (34, 48), (40, 32), (56, 32)]
+    pts = [(x * s, y * s) for x, y in pts]
+    w = int(5 * s)
+    d.line(pts, fill="#30D158", width=w, joint="curve")
+    r = w / 2  # 라인 양 끝을 둥글게
+    for p in (pts[0], pts[-1]):
+        d.ellipse((p[0] - r, p[1] - r, p[0] + r, p[1] + r), fill="#30D158")
+    return img
+
 def load_config():
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -63,7 +78,9 @@ class MainController:
         self.app      = AppUI(self.machines)
 
         if os.path.exists(ICON_PATH):
-            try: self.app.iconbitmap(ICON_PATH)
+            try:
+                self.app.iconbitmap(ICON_PATH)
+                self.app.icon_path = ICON_PATH   # 설정 창/알람 팝업 등 자식 창에서도 사용
             except Exception as e: logger.error(f"아이콘 적용 실패: {e}")
 
         self._bind_conn_buttons()
@@ -118,15 +135,14 @@ class MainController:
         if not os.path.exists(ICON_PATH):
             try:
                 os.makedirs(ICONS_DIR, exist_ok=True)
-                img = Image.new('RGB', (64, 64), color='#1F6AA5')
-                draw = ImageDraw.Draw(img)
-                draw.rounded_rectangle((4, 4, 60, 60), fill=None, outline='white', width=3, radius=10)
-                draw.polygon([(20, 20), (28, 45), (32, 30), (36, 45), (44, 20), (40, 20), (36, 35), (32, 25), (28, 35), (24, 20)], fill='white')
-                img.save(ICON_PATH, format='ICO', sizes=[(64, 64), (32, 32), (16, 16)])
+                draw_watcher_icon().save(ICON_PATH, format='ICO',
+                                         sizes=[(256, 256), (64, 64), (48, 48), (32, 32), (16, 16)])
             except Exception as e: logger.error(f"아이콘 생성 실패: {e}")
-        # 토스트용 PNG 버전이 없으면 ico에서 변환 생성
-        if os.path.exists(ICON_PATH) and not os.path.exists(ICON_PNG):
-            try: Image.open(ICON_PATH).save(ICON_PNG, format='PNG')
+        # 토스트용 고해상도 PNG (256px)
+        if not os.path.exists(ICON_PNG):
+            try:
+                os.makedirs(ICONS_DIR, exist_ok=True)
+                draw_watcher_icon().resize((256, 256), Image.LANCZOS).save(ICON_PNG, format='PNG')
             except Exception as e: logger.error(f"PNG 아이콘 생성 실패: {e}")
 
     def setup_tray(self):
@@ -191,6 +207,9 @@ class MainController:
 
                 if not self.app.is_hidden:
                     self.app.apply_status(m.ip, "-", "OFFLINE", "-", "-", False, False)
+
+        if not self.app.is_hidden:
+            self.app.update_summary()
 
         self.app.after(3000 if self.app.is_hidden else 500, self.update_loop)
 

@@ -68,7 +68,7 @@ class AppUI(ctk.CTk):
     def __init__(self, machines):
         super().__init__()
 
-        self.init_width = 820
+        self.init_width = 640
 
         self.title("DN Solutions Machine Watcher v2.3")
         ctk.set_appearance_mode("dark")
@@ -81,6 +81,7 @@ class AppUI(ctk.CTk):
 
         self.machines = machines
         self.scroll = None
+        self.icon_path = None   # MainController가 아이콘 존재 확인 후 설정
         self.notify_enabled = tk.BooleanVar(value=True)
         self.widgets = {}
         self.is_hidden = False
@@ -101,39 +102,50 @@ class AppUI(ctk.CTk):
         self.header_line = ctk.CTkFrame(self, height=1, corner_radius=0, fg_color=COL_BORDER)
         self.header_line.pack(fill="x", side="top")
 
-        self.title_lbl = ctk.CTkLabel(
-            self.header,
-            text="CNC FACTORY MONITOR",
-            font=("Segoe UI", 13, "bold"),
-            text_color=COL_MUTED
+        # [v2.3] B안 헤더: 제목 대신 실시간 가동 요약
+        self.summary_dot = ctk.CTkLabel(
+            self.header, text="●", font=("Segoe UI", 13),
+            text_color=STATE_COLORS["OFFLINE"][0]
         )
-        self.title_lbl.pack(side="left", padx=20, pady=12)
+        self.summary_dot.pack(side="left", padx=(20, 7), pady=13)
+
+        self.summary_lbl = ctk.CTkLabel(
+            self.header, text="연결된 장비 없음",
+            font=(self.font_ui, 14, "bold"), text_color=COL_TEXT
+        )
+        self.summary_lbl.pack(side="left")
+
+        self.summary_sub = ctk.CTkLabel(
+            self.header, text="",
+            font=(self.font_ui, 12), text_color=COL_SUB
+        )
+        self.summary_sub.pack(side="left", padx=(7, 0), pady=(2, 0))
 
         self.compact_btn = ctk.CTkButton(
-            self.header, text="➖", width=36, height=36,
+            self.header, text="➖", width=30, height=30,
             fg_color="transparent", hover_color=COL_BTN,
-            font=("Segoe UI Emoji", 18),
+            font=("Segoe UI Emoji", 13),
             command=self.toggle_compact_mode
         )
-        self.compact_btn.pack(side="right", padx=(0, 15), pady=7)
+        self.compact_btn.pack(side="right", padx=(0, 15), pady=10)
         self.compact_tooltip = ToolTip(self.compact_btn, "최소화 모드")
 
         self.notify_btn = ctk.CTkButton(
-            self.header, text="🔔", width=36, height=36,
+            self.header, text="🔔", width=30, height=30,
             fg_color="transparent", hover_color=COL_BTN,
-            font=("Segoe UI Emoji", 20),
+            font=("Segoe UI Emoji", 14),
             command=self.toggle_notify
         )
-        self.notify_btn.pack(side="right", padx=(0, 5), pady=7)
+        self.notify_btn.pack(side="right", padx=(0, 5), pady=10)
         self.notify_tooltip = ToolTip(self.notify_btn, "알림: 켜짐")
 
         # [v2.2 추가] 장비 설정 버튼 (command는 MainController가 연결)
         self.settings_btn = ctk.CTkButton(
-            self.header, text="⚙️", width=36, height=36,
+            self.header, text="⚙️", width=30, height=30,
             fg_color="transparent", hover_color=COL_BTN,
-            font=("Segoe UI Emoji", 18)
+            font=("Segoe UI Emoji", 13)
         )
-        self.settings_btn.pack(side="right", padx=(0, 5), pady=7)
+        self.settings_btn.pack(side="right", padx=(0, 5), pady=10)
         self.settings_tooltip = ToolTip(self.settings_btn, "장비 설정")
 
         # 2. 메인 컨테이너 영역 (장비 카드)
@@ -262,6 +274,26 @@ class AppUI(ctk.CTk):
         else:
             w["btn"].configure(text="연결하기", fg_color=COL_ACCENT, hover_color=COL_ACCENT_HOV, text_color="#FFFFFF")
 
+    # ── [v2.3] 헤더 실시간 가동 요약 갱신 ─────────────────────
+    def update_summary(self):
+        total = len(self.machines)
+        connected = [m for m in self.machines if getattr(m, "is_connected", False)]
+        alarm   = sum(1 for m in connected if getattr(m, "data", {}).get("is_alarm"))
+        running = sum(1 for m in connected if "RUN" in getattr(m, "data", {}).get("status", ""))
+
+        if alarm:
+            col, txt, txt_col = "#FF453A", f"알람 {alarm}대 발생", "#FF453A"
+        elif not connected:
+            col, txt, txt_col = "#5A5A60", "연결된 장비 없음", COL_MUTED
+        elif running:
+            col, txt, txt_col = "#30D158", f"{running}대 가동 중", COL_TEXT
+        else:
+            col, txt, txt_col = "#98989D", f"{len(connected)}대 대기 중", COL_TEXT
+
+        self.summary_dot.configure(text_color=col)
+        self.summary_lbl.configure(text=txt, text_color=txt_col)
+        self.summary_sub.configure(text=f"/  전체 {total}대")
+
     # ── 알림 토글 로직 ──────────────────────────────────────
     def toggle_notify(self):
         current_state = not self.notify_enabled.get()
@@ -354,6 +386,9 @@ class AppUI(ctk.CTk):
         popup.geometry("300x256")
         popup.resizable(False, False)
         popup.attributes("-topmost", True)
+        # customtkinter가 생성 직후(200ms) 기본 아이콘으로 덮어쓰므로 그 뒤에 적용
+        if self.icon_path:
+            popup.after(250, lambda: popup.iconbitmap(self.icon_path))
 
         circle = ctk.CTkFrame(popup, width=56, height=56, corner_radius=28, fg_color="#33100D")
         circle.pack(pady=(24, 10))
@@ -380,6 +415,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self.geometry("520x420")
         self.attributes("-topmost", True)
         self.grab_set()  # 설정 중에는 메인 창 조작 잠금
+
+        # customtkinter가 생성 직후(200ms) 기본 아이콘으로 덮어쓰므로 그 뒤에 적용
+        icon = getattr(master, "icon_path", None)
+        if icon:
+            self.after(250, lambda: self.iconbitmap(icon))
         self.on_save = on_save
         self.rows = []
 
