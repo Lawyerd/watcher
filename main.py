@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import ctypes
 import socket
 import logging
 import threading
@@ -39,6 +40,19 @@ DLL_PATH     = os.path.join(DLL_DIR, "Fwlib64.dll")
 ICONS_DIR    = os.path.join(BASE_DIR, "icons")
 ICON_PATH    = os.path.join(ICONS_DIR, "watcher_icon.ico")
 ICON_PNG     = os.path.join(ICONS_DIR, "watcher_icon.png")   # 토스트 알림용 (winotify는 png 필요)
+FONTS_DIR    = os.path.join(BASE_DIR, "fonts")
+
+def load_private_fonts():
+    """[v2.3] fonts/ 폴더의 폰트를 이 프로세스 전용으로 로드.
+    시스템 설치 없이 앱 안에서만 사용 가능 (JetBrains Mono 동봉 배포용)."""
+    if not os.path.isdir(FONTS_DIR): return
+    FR_PRIVATE = 0x10
+    for f in os.listdir(FONTS_DIR):
+        if f.lower().endswith((".ttf", ".otf")):
+            try:
+                ctypes.windll.gdi32.AddFontResourceExW(os.path.join(FONTS_DIR, f), FR_PRIVATE, None)
+            except Exception as e:
+                logger.error(f"폰트 로드 실패 ({f}): {e}")
 
 if os.path.exists(DLL_DIR):
     if hasattr(os, 'add_dll_directory'): os.add_dll_directory(DLL_DIR)
@@ -252,4 +266,5 @@ if __name__ == "__main__":
     if is_already_running():
         import tkinter as tk
         r = tk.Tk(); r.withdraw(); messagebox.showwarning("알림", "이미 실행 중입니다."); r.destroy(); sys.exit(0)
+    load_private_fonts()   # AppUI의 폰트 탐색보다 먼저 로드해야 함
     MainController().app.mainloop()
