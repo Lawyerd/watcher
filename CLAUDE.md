@@ -11,7 +11,7 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 | `fanuc_logic.py` | FOCAS 통신 (`FanucMachine`). 상태/사이클타임(파라미터 6757·6758)/공구번호(PMC D0450·D0452) 읽기 |
 | `monitor_ui.py` | UI 전부 (`AppUI`, `SettingsDialog`, 다크 테마 팔레트). 상태 반영은 `AppUI.apply_status()` 한 곳으로 일원화. 기본 타이틀바 없음(헤더가 타이틀바) |
 | `notifier.py` | 상태 전이 감지 → winotify 토스트 + `logs/history_YYYY-MM-DD.csv` 가공 이력 + `logs/alarm_YYYY-MM-DD.csv` 알람 발생/해제 이력 기록 |
-| `remote_server.py` | 원격 모니터링 (`RemoteServer`). 읽기 전용 HTTP 서버(포트 8765): `/api/status`(스냅샷), `/api/history`·`/api/alarms`(`?date=`로 logs/ CSV), 홈 화면 아이콘·manifest. 켜져 있는 동안 시스템 절전 차단 |
+| `remote_server.py` | 원격 모니터링 (`RemoteServer`). 읽기 전용 HTTP 서버(포트 8765): `/api/status`(스냅샷), `/api/history`·`/api/alarms`(`?date=`로 logs/ CSV), 홈 화면 아이콘·manifest. `/api/*`는 PIN 로그인 필요(`RemoteAuth`, `remote.json`에 PIN 해시·쿠키 서명 키). 켜져 있는 동안 시스템 절전 차단 |
 | `remote_page.py` | 휴대폰 페이지 HTML (B안: 가동/정지/알람 타일 + 현황/가공 이력/알람 이력 탭). 집에서는 Tailscale로 접속 |
 | `machines.json` | 장비 목록 (앱 내 ⚙️ 설정 UI로 편집 가능, 재시작 불필요) |
 | `read_status.py`, `connection_test.py` | 단독 연결 테스트 스크립트 |
@@ -33,6 +33,7 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 12. **테두리 없는 창**: `overrideredirect(True)`는 시작 시 1회만. overrideredirect 창은 작업표시줄에서 빠지고 `iconify()`가 막히므로 `_apply_frameless_style()`에서 WS_EX_APPWINDOW로 바꾸고, 최소화는 Win32 `ShowWindow(SW_MINIMIZE)`로 한다. `attributes("-topmost")`는 스타일을 유지함(실측).
 13. **알람 내용은 `cnc_rdalmmsg2`로 알람 상태(`stat.alarm`)일 때만 읽는다.** 발생 시각은 FOCAS가 주지 않아 처음 본 시각을 유지. 장비 화면이 한글 설정이라 메시지가 cp949로 내려옴 (`#3000=1` 테스트 → "MC3001 매크로 알람" 실측 확인). 알람 이력 조회 함수(`cnc_rdalmhistry` 류)는 이력 기록 정지가 필요할 수 있어 사용하지 않음.
 14. **원격 접속 방화벽**: 공장 PC 네트워크는 "공용", Tailscale 어댑터는 "개인"으로 잡힌다. exe별 허용 규칙은 버전마다 경로가 바뀌므로 포트 규칙(8765, 원격 IP 100.64.0.0/10)으로 허용하는 게 안정적.
+15. **원격 페이지는 Tailscale Funnel로 인터넷에 공개될 수 있다** (`tailscale funnel --bg 8765` → `https://기기.tailnet.ts.net`). 그래서 PIN 없이는 서버를 켤 수 없게 했고(📡 → PIN 설정 창), 페이지·아이콘 외 모든 `/api/*`는 로그인 쿠키(30일, HMAC 서명) 필요. PIN 5회 실패 시 5분 잠금. Funnel 요청은 tailscaled가 127.0.0.1로 프록시하므로 방화벽과 무관하고, 클라이언트 IP로 사용자를 구분할 수 없다.
 
 ## 빌드 & 배포
 
@@ -41,6 +42,7 @@ pyinstaller CNC_Watcher_v2.4.spec --noconfirm && cp -r dll icons fonts dist/CNC_
 ```
 
 - **재빌드하면 dist 폴더가 초기화되므로 dll/icons/fonts/machines.json 복사를 매번 다시 해야 한다.**
+- dist에서 exe를 실행하며 생긴 `logs/`(가공·알람 이력), `remote.json`(원격 PIN)도 같이 지워지므로 **재빌드 전에 백업 → 빌드 후 복원**. 셸 작업 위치가 dist 폴더 안이면 폴더 삭제가 막혀 빌드가 실패한다.
 - 빌드 전 실행 중인 exe를 종료할 것 (dll 잠김으로 빌드 실패).
 - `dist\CNC_Watcher_v2.4\` 폴더 전체가 완전한 배포본 — 공장 PC에 폴더째 복사하면 끝.
 - `*.spec`은 gitignore 대상(로컬 전용). 버전 올릴 때 spec 복사 후 name/icon 수정.

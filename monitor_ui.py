@@ -4,6 +4,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox
 import customtkinter as ctk
+from remote_server import PIN_LEN
 
 # ── [v2.3] A안 다크 테마 팔레트 ──────────────────────────────
 COL_BG       = "#131316"   # 창 배경
@@ -210,7 +211,7 @@ class AppUI(ctk.CTk):
 
         # [v2.4] 원격 모니터링 버튼 (command는 MainController가 연결)
         self.remote_btn = self._header_icon_btn(ICON_REMOTE)
-        self.remote_tooltip = ToolTip(self.remote_btn, "원격 모니터링: 꺼짐")
+        self.remote_tooltip = ToolTip(self.remote_btn, "원격 모니터링: 꺼짐\n우클릭: 설정")
 
         # 헤더 빈 영역을 잡고 창 이동
         for w_item in (self.header, self.summary_dot, self.summary_lbl, self.summary_sub):
@@ -418,10 +419,10 @@ class AppUI(ctk.CTk):
         if on:
             self.remote_btn.configure(fg_color=COL_REMOTE_ON, hover_color=COL_REMOTE_ON,
                                       text_color=STATE_COLORS["RUN"][0])
-            self.remote_tooltip.text = "원격 모니터링: 켜짐 (절전 차단 중)\n" + "\n".join(urls)
+            self.remote_tooltip.text = "원격 모니터링: 켜짐 (절전 차단 중)\n" + "\n".join(urls) + "\n우클릭: 설정"
         else:
             self.remote_btn.configure(fg_color="transparent", hover_color=COL_BTN, text_color=COL_MUTED)
-            self.remote_tooltip.text = "원격 모니터링: 꺼짐"
+            self.remote_tooltip.text = "원격 모니터링: 꺼짐\n우클릭: 설정"
     # ─────────────────────────────────────────────────────────────
 
     def on_drag_start(self, event):
@@ -699,3 +700,95 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.on_save(data)
         self.destroy()
+
+
+# ── [v2.4] 원격 모니터링 설정 창 (PIN 설정/변경, 외부 주소, 모든 기기 로그아웃) ──
+class RemoteDialog(ctk.CTkToplevel):
+    def __init__(self, master, has_pin, running, on_save, on_logout_all):
+        super().__init__(master, fg_color=COL_BG)
+        self.title("원격 모니터링 설정")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.grab_set()
+
+        # customtkinter가 생성 직후(200ms) 기본 아이콘으로 덮어쓰므로 그 뒤에 적용
+        icon = getattr(master, "icon_path", None)
+        if icon:
+            self.after(250, lambda: self.iconbitmap(icon))
+        self.has_pin, self.on_save, self.on_logout_all = has_pin, on_save, on_logout_all
+        self.font_ui  = getattr(master, "font_ui", "Malgun Gothic")
+        self.font_num = getattr(master, "font_num", "Consolas")
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", padx=18, pady=(10, 16))
+        tk.Frame(body, width=300, height=1, bg=COL_BG).pack()   # 너비 확보 (높이는 내용에 맞춤)
+
+        self._label(body, "외부 접속 주소 (Tailscale Funnel)")
+        self.url_lbl = ctk.CTkLabel(body, text="  확인 중…", anchor="w", height=30, corner_radius=6,
+                                    fg_color=COL_CARD, text_color=COL_MUTED, font=(self.font_num, 12))
+        self.url_lbl.pack(fill="x")
+
+        self._label(body, "PIN 변경 (비워두면 그대로)" if has_pin else f"새 PIN (숫자 {PIN_LEN}자리)")
+        self.e_pin = self._entry(body)
+        self._label(body, "PIN 확인")
+        self.e_pin2 = self._entry(body)
+
+        self.msg = ctk.CTkLabel(body, text="", height=18, anchor="w", font=(self.font_ui, 11))
+        self.msg.pack(fill="x", pady=(6, 0))
+
+        btns = ctk.CTkFrame(body, fg_color="transparent")
+        btns.pack(fill="x", pady=(6, 0))
+        if has_pin:
+            ctk.CTkButton(btns, text="모든 기기 로그아웃", height=32, corner_radius=6,
+                          fg_color=COL_BTN, hover_color=COL_BTN_HOV, text_color=COL_MUTED,
+                          font=(self.font_ui, 12), command=self.logout_all
+                          ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(btns, text="저장" if running else "저장 후 켜기", height=32, corner_radius=6,
+                      fg_color=COL_ACCENT, hover_color=COL_ACCENT_HOV, text_color="#FFFFFF",
+                      font=(self.font_ui, 12, "bold"), command=self.save
+                      ).pack(side="left", expand=True, fill="x", padx=(4 if has_pin else 0, 0))
+
+        self.bind("<Return>", lambda e: self.save())
+        self.after(300, self.e_pin.focus_set)
+
+    def _label(self, parent, text):
+        ctk.CTkLabel(parent, text=text, anchor="w", height=18, text_color=COL_SUB,
+                     font=(self.font_ui, 11)).pack(fill="x", pady=(12, 4))
+
+    def _entry(self, parent):
+        e = ctk.CTkEntry(parent, show="●", height=34, font=(self.font_num, 14),
+                         fg_color=COL_CARD, border_color=COL_BORDER, border_width=1, text_color=COL_VALUE)
+        e.pack(fill="x")
+        return e
+
+    def set_url(self, url):
+        """Funnel 주소는 tailscale 명령으로 확인하느라 늦게 채워짐 (MainController가 호출)"""
+        if url:
+            self.url_lbl.configure(text="  " + url, fg_color=COL_REMOTE_ON, text_color=STATE_COLORS["RUN"][0])
+        else:
+            self.url_lbl.configure(text="  Funnel 꺼짐 · 사내망/Tailscale로만 접속", text_color=COL_MUTED,
+                                   font=(self.font_ui, 11))
+
+    def _show(self, text, ok=False):
+        self.msg.configure(text=text, text_color=STATE_COLORS["RUN"][0] if ok else "#FF6961")
+
+    def save(self):
+        p1, p2 = self.e_pin.get().strip(), self.e_pin2.get().strip()
+        if not p1 and not p2:
+            if not self.has_pin:
+                return self._show("PIN을 정해주세요")
+            pin = None   # PIN은 그대로 두고 켜기만
+        elif len(p1) != PIN_LEN or not p1.isdigit():
+            return self._show(f"PIN은 숫자 {PIN_LEN}자리예요")
+        elif p1 != p2:
+            return self._show("PIN 확인이 일치하지 않아요")
+        else:
+            pin = p1
+        self.on_save(pin)
+        self.destroy()
+
+    def logout_all(self):
+        if messagebox.askyesno("모든 기기 로그아웃", "로그인된 모든 휴대폰에서 로그아웃할까요?\n다시 접속하려면 PIN을 입력해야 해요.",
+                               parent=self):
+            self.on_logout_all()
+            self._show("모든 기기를 로그아웃했어요", ok=True)

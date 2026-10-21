@@ -81,8 +81,41 @@ INDEX_HTML = """<!doctype html>
   nav button.on { color: #F2F2F7; }
   nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8;
             stroke-linecap: round; stroke-linejoin: round; }
+  /* PIN 로그인 (A안 숫자 키패드) — 잠긴 동안에는 앱 화면을 숨김 */
+  body.locked .top, body.locked main, body.locked nav, body:not(.locked) #login { display: none; }
+  #login { max-width: 320px; margin: 0 auto; padding: calc(56px + env(safe-area-inset-top)) 28px 24px; text-align: center; }
+  .logo { width: 56px; height: 56px; border-radius: 15px; display: block; margin: 0 auto 14px; }
+  #login h1 { font-size: 19px; margin: 0; }
+  #login p { font-size: 13px; color: #8E8E93; margin: 6px 0 0; }
+  #dots { display: flex; justify-content: center; gap: 14px; margin: 30px 0 10px; }
+  #dots span { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid #636366; }
+  #dots span.on { background: #F2F2F7; border-color: #F2F2F7; }
+  #dots.err span { border-color: #FF453A; }
+  #dots.err { animation: shake .35s; }
+  @keyframes shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+  #lmsg { font-size: 12px; color: #FF6961; min-height: 17px; }
+  #keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px; }
+  #keys button { height: 62px; border-radius: 31px; border: 0; background: #1C1C21; color: #F2F2F7;
+                 font: 400 26px -apple-system, "Malgun Gothic", sans-serif; }
+  #keys button:active { background: #33333A; }
+  #keys button.del { background: none; color: #8E8E93; }
+  #keys svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
 </style></head>
 <body>
+<section id="login">
+  <img class="logo" src="/icon-192.png" alt="">
+  <h1>CNC Watcher</h1>
+  <p>PIN 6자리를 입력하세요</p>
+  <div id="dots"></div>
+  <div id="lmsg"></div>
+  <div id="keys">
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+    <span></span><button data-k="0">0</button>
+    <button data-k="del" class="del" aria-label="지우기"><svg viewBox="0 0 24 24"><path d="M9 5h11v14H9l-6-7z"/><path d="M12.5 9.5l5 5M17.5 9.5l-5 5"/></svg></button>
+  </div>
+</section>
 <div class="top"><b>CNC Watcher</b><span id="top-st">연결 중…</span></div>
 <main id="view"><div class="empty">불러오는 중…</div></main>
 <nav>
@@ -195,6 +228,7 @@ async function loadLog() {
   const want = tab, api = want === "hist" ? "history" : "alarms";
   try {
     const r = await fetch(`/api/${api}` + (date ? `?date=${date}` : ""), { cache: "no-store" });
+    if (r.status === 401) return showLogin();
     const d = await r.json();
     if (tab !== want) return;   // 응답 오는 사이 탭을 바꾼 경우
     log = d; date = d.date; today = d.today;
@@ -231,9 +265,64 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
   else { $("view").innerHTML = `<div class="empty">불러오는 중…</div>`; loadLog(); }
 }));
 
+// ── PIN 로그인 (6자리 누르면 바로 확인, 성공하면 30일 유지 쿠키) ──
+let pin = "", busy = false;
+const locked = () => document.body.classList.contains("locked");
+
+function drawDots(err) {
+  $("dots").innerHTML = [0, 1, 2, 3, 4, 5].map(i => `<span${i < pin.length ? ' class="on"' : ""}></span>`).join("");
+  $("dots").className = err ? "err" : "";
+}
+
+function showLogin() {
+  if (locked()) return;
+  document.body.classList.add("locked");
+  pin = ""; $("lmsg").textContent = ""; drawDots();
+}
+
+async function press(k) {
+  if (busy) return;
+  if (k === "del") pin = pin.slice(0, -1);
+  else if (pin.length < 6) pin += k;
+  $("lmsg").textContent = "";
+  drawDots();
+  if (pin.length < 6) return;
+  busy = true;
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ pin }) });
+    const d = await r.json();
+    pin = "";
+    if (d.ok) {
+      document.body.classList.remove("locked");
+      tick();
+    } else {
+      drawDots(true);
+      $("lmsg").textContent = d.locked_sec ? `여러 번 틀려서 잠겼어요 · ${Math.ceil(d.locked_sec / 60)}분 뒤 다시 시도`
+                                           : `PIN이 틀렸어요 · ${d.left}번 남음`;
+    }
+  } catch (e) {
+    pin = ""; drawDots(true);
+    $("lmsg").textContent = "PC에 연결할 수 없음";
+  }
+  busy = false;
+}
+
+$("keys").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (b) press(b.dataset.k);
+});
+document.addEventListener("keydown", e => {
+  if (!locked()) return;
+  if (/^[0-9]$/.test(e.key)) press(e.key);
+  else if (e.key === "Backspace") press("del");
+});
+
 async function tick() {
+  if (locked()) return;
   try {
     const r = await fetch("/api/status", { cache: "no-store" });
+    if (r.status === 401) return showLogin();
     last = await r.json();
     setTop(last);
     if (tab === "now") renderNow();

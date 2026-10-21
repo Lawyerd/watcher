@@ -12,9 +12,9 @@ from tkinter import messagebox
 from PIL import Image, ImageDraw
 import pystray
 from fanuc_logic import FanucMachine
-from monitor_ui import AppUI, SettingsDialog, state_of, summary_of
+from monitor_ui import AppUI, SettingsDialog, RemoteDialog, state_of, summary_of
 from notifier import StatusNotifier
-from remote_server import RemoteServer, local_urls
+from remote_server import RemoteServer, RemoteAuth, local_urls, funnel_url
 
 from logging.handlers import RotatingFileHandler
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -39,6 +39,7 @@ else:
 
 DLL_DIR      = os.path.join(BASE_DIR, "dll")
 CONFIG_FILE  = os.path.join(BASE_DIR, "machines.json")
+REMOTE_FILE  = os.path.join(BASE_DIR, "remote.json")    # [v2.4] 원격 PIN 해시·로그인 서명 키
 DLL_PATH     = os.path.join(DLL_DIR, "Fwlib64.dll")
 ICONS_DIR    = os.path.join(BASE_DIR, "icons")
 ICON_PATH    = os.path.join(ICONS_DIR, "watcher_icon.ico")
@@ -104,8 +105,10 @@ class MainController:
         self.app.settings_btn.configure(command=self.open_settings)
 
         # [v2.4] 원격 모니터링 (휴대폰 등에서 상태 확인용 읽기 전용 서버)
-        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=self._web_icons())
+        self.remote_auth = RemoteAuth(REMOTE_FILE)
+        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=self._web_icons(), auth=self.remote_auth)
         self.app.remote_btn.configure(command=self.toggle_remote)
+        self.app.remote_btn.bind("<Button-3>", lambda e: self.open_remote_dialog())
 
         self.setup_tray()
         self.update_loop()
@@ -203,7 +206,12 @@ class MainController:
         if self.remote.running:
             self.remote.stop()
             self.app.set_remote_state(False)
-            return
+        elif not self.remote_auth.has_pin:
+            self.open_remote_dialog()   # PIN 없이 공개되지 않도록 처음엔 PIN부터 정함
+        else:
+            self.start_remote()
+
+    def start_remote(self):
         try:
             self.remote.start()
         except OSError as e:
@@ -211,7 +219,29 @@ class MainController:
             messagebox.showerror("원격 모니터링", f"서버를 시작할 수 없습니다 (포트 {self.remote.port}).\n{e}")
             return
         self.publish_snapshot()
-        self.app.set_remote_state(True, local_urls(self.remote.port))
+        urls = local_urls(self.remote.port)
+        self.app.set_remote_state(True, urls)
+        # Funnel 주소는 tailscale 명령으로 확인 (최대 3초) → 백그라운드에서 조회 후 툴팁에 추가
+        def _lookup():
+            url = funnel_url()
+            if url:
+                self.app.after(0, lambda: self.remote.running and self.app.set_remote_state(True, [url] + urls))
+        threading.Thread(target=_lookup, daemon=True).start()
+
+    def open_remote_dialog(self):
+        dlg = RemoteDialog(self.app, self.remote_auth.has_pin, self.remote.running,
+                           self.save_remote_settings, self.remote_auth.logout_all)
+        def _lookup():
+            url = funnel_url()
+            self.app.after(0, lambda: dlg.winfo_exists() and dlg.set_url(url))
+        threading.Thread(target=_lookup, daemon=True).start()
+
+    def save_remote_settings(self, pin):
+        if pin:
+            self.remote_auth.set_pin(pin)   # 기존 로그인 기기는 전부 로그아웃됨
+            logger.info("원격 모니터링 PIN 변경")
+        if not self.remote.running:
+            self.start_remote()
 
     def _track_state(self, m):
         """[v2.4] 상태(RUN/ALARM/…)가 바뀐 시각 기록 → 휴대폰 페이지의 'N분째' 표시용"""

@@ -18,3 +18,5 @@ dll/
 # 런타임 로그/이력 (실행 시 생성됨)
 cnc_watcher.log*
 logs/
+# 원격 모니터링 PIN 해시/서명 키 (실행 시 생성)
+remote.json
