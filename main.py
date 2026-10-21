@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import ctypes
+import datetime
 import socket
 import logging
 import threading
@@ -10,8 +11,9 @@ from tkinter import messagebox
 from PIL import Image, ImageDraw
 import pystray
 from fanuc_logic import FanucMachine
-from monitor_ui import AppUI, SettingsDialog
+from monitor_ui import AppUI, SettingsDialog, state_of, summary_of
 from notifier import StatusNotifier
+from remote_server import RemoteServer, local_urls
 
 from logging.handlers import RotatingFileHandler
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -100,6 +102,10 @@ class MainController:
         self._bind_conn_buttons()
         self.app.settings_btn.configure(command=self.open_settings)
 
+        # [v2.4] 원격 모니터링 (휴대폰 등에서 상태 확인용 읽기 전용 서버)
+        self.remote = RemoteServer()
+        self.app.remote_btn.configure(command=self.toggle_remote)
+
         self.setup_tray()
         self.update_loop()
 
@@ -177,9 +183,43 @@ class MainController:
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def quit_all(self):
+        self.remote.stop()
         self.tray_icon.stop()
         for m in self.machines: m.disconnect()
         self.app.quit()
+
+    def toggle_remote(self):
+        if self.remote.running:
+            self.remote.stop()
+            self.app.set_remote_state(False)
+            return
+        try:
+            self.remote.start()
+        except OSError as e:
+            logger.error(f"원격 모니터링 시작 실패: {e}")
+            messagebox.showerror("원격 모니터링", f"서버를 시작할 수 없습니다 (포트 {self.remote.port}).\n{e}")
+            return
+        self.publish_snapshot()
+        self.app.set_remote_state(True, local_urls(self.remote.port))
+
+    def publish_snapshot(self):
+        """원격 서버로 넘길 상태 스냅샷 (메인 스레드에서 생성 → 서버 스레드는 FOCAS 접근 안 함)"""
+        machines = []
+        for m in self.machines:
+            d = m.data
+            machines.append({
+                "name": m.name, "connected": m.is_connected,
+                "state": state_of(d["status"], d["is_alarm"], m.is_connected),
+                "status": d["status"], "mode": d["mode"], "tool": d["tool"],
+                "next_tool": d["next_tool"], "cycle_time": d["cycle_time"],
+                "alarms": d["alarms"],
+            })
+        col, txt, _ = summary_of(self.machines)
+        self.remote.update_snapshot({
+            "updated": datetime.datetime.now().strftime("%H:%M:%S"),
+            "summary": {"color": col, "text": txt, "total": len(self.machines)},
+            "machines": machines,
+        })
 
     def toggle_conn(self, m):
         if not m.is_connected:
@@ -204,16 +244,18 @@ class MainController:
                     st  = m.data["status"]
                     cyc = m.data["cycle_time"]
 
+                    alarms = m.data["alarms"]
+
                     notif_res = self.notifier.check_and_notify(
-                        m.name, st, cyc, m.data["is_alarm"], self.app.notify_enabled.get()
+                        m.name, st, cyc, m.data["is_alarm"], self.app.notify_enabled.get(), alarms
                     )
 
-                    if notif_res == "ALARM_POPUP": self.app.show_emergency_popup(m.name)
+                    if notif_res == "ALARM_POPUP": self.app.show_emergency_popup(m.name, alarms)
 
                     if not self.app.is_hidden:
                         # [v2.3] 상태 반영은 AppUI.apply_status가 일괄 처리
                         self.app.apply_status(m.ip, m.data["mode"], st, m.data["tool"],
-                                              cyc, m.data["is_alarm"], True)
+                                              cyc, m.data["is_alarm"], True, alarms)
             else:
                 # [v2.2 추가] 절전 복귀 등으로 끊긴 경우 자동 재연결
                 if m.want_connected:
@@ -224,6 +266,9 @@ class MainController:
 
         if not self.app.is_hidden:
             self.app.update_summary()
+
+        if self.remote.running:
+            self.publish_snapshot()
 
         self.app.after(3000 if self.app.is_hidden else 500, self.update_loop)
 

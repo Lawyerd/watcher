@@ -50,14 +50,14 @@ class ODBST(ctypes.Structure):
         ("edit",      ctypes.c_short),
     ]
 
-# ── ODBMACRO 구조체 (공구 번호 읽기용) ──────────────────────────
-class ODBMACRO(ctypes.Structure):
-    _pack_ = 2  # FOCAS C언어 구조체 크기(10바이트)와 완벽히 맞추기 위한 필수 옵션
+# ── IODBPMC 구조체 (PMC 영역 읽기용, word 단위) ─────────────────
+class IODBPMC(ctypes.Structure):
     _fields_ = [
-        ("datano",  ctypes.c_short),
-        ("dummy",   ctypes.c_short),
-        ("mcr_val", ctypes.c_int),    # 실제 공구 번호가 들어가는 곳
-        ("dec_val", ctypes.c_short),
+        ("type_a",   ctypes.c_short),
+        ("type_d",   ctypes.c_short),
+        ("datano_s", ctypes.c_short),
+        ("datano_e", ctypes.c_short),
+        ("idata",    ctypes.c_short * 5),
     ]
 
 stat = ODBST()
@@ -74,21 +74,20 @@ if ret == 0:
 else:
     print(f"❌ cnc_statinfo 실패 (ret={ret})")
 
-# ── 공구 번호 (매크로 4120번 읽기) ────────────────────────────
+# ── 공구 번호 (PMC D0450 스핀들 / D0452 대기) ─────────────────
 print("\n─── 공구 정보 읽기 ──────────────────────────")
-macro = ODBMACRO()
-# 4120번 매크로 = FANUC 표준 '마지막으로 지령된 T코드'
-ret_macro = fanuc.cnc_rdmacro(handle, ctypes.c_short(4120), ctypes.c_short(10), ctypes.byref(macro))
+# 매크로 #4120은 '마지막으로 지령된 T코드'라서 T 선지령 시 대기 공구가 나옴
+# → DN Solutions PMC 레지스터에서 직접 읽음 (adr_type 9 = D, data_type 1 = word)
+pmc = IODBPMC()
+ret_pmc = fanuc.pmc_rdpmcrng(handle, ctypes.c_short(9), ctypes.c_short(1),
+                             ctypes.c_ushort(450), ctypes.c_ushort(453),
+                             ctypes.c_ushort(12), ctypes.byref(pmc))
 
-if ret_macro == 0:
-    real_tool = macro.mcr_val
-    # 소수점 처리 방어 로직 (보통 T코드는 소수점이 없으나 안전을 위해 추가)
-    if macro.dec_val > 0:
-        real_tool = int(real_tool / (10 ** macro.dec_val))
-        
-    print(f"  현재 공구 : T{real_tool:02d}")
+if ret_pmc == 0:
+    print(f"  현재 공구 : T{pmc.idata[0]:02d}")
+    print(f"  대기 공구 : T{pmc.idata[1]:02d}")
 else:
-    print(f"❌ 공구 번호 읽기 실패 (ret={ret_macro})")
+    print(f"❌ 공구 번호 읽기 실패 (ret={ret_pmc})")
 
 fanuc.cnc_freelibhndl(handle)
 print("\n✅ 연결 해제 완료")

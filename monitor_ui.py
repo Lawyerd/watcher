@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import tkinter as tk
 import tkinter.font as tkfont
@@ -16,6 +17,40 @@ COL_BTN      = "#26262C"   # 어두운 버튼
 COL_BTN_HOV  = "#33333A"
 COL_ACCENT   = "#0A84FF"   # 강조(연결/저장)
 COL_ACCENT_HOV = "#0B6FD6"
+COL_CLOSE_HOV  = "#C42B1C"   # [v2.4] 닫기 버튼 호버 (Windows 표준 빨강)
+COL_REMOTE_ON  = "#0E2E1A"   # [v2.4] 원격 모니터링 켜짐 버튼 배경
+COL_ALM_CODE   = "#FF6961"   # [v2.4] 알람 목록: 번호
+COL_ALM_MSG    = "#F2C9C6"   #        내용
+COL_ALM_SUB    = "#8E5A56"   #        발생 시각
+COL_ALM_LINE   = "#3A1B18"   #        구분선
+
+# [v2.4] 헤더 아이콘 글리프 (Segoe Fluent Icons / MDL2 Assets 공통 코드)
+ICON_SETTINGS = ""
+ICON_BELL     = ""
+ICON_BELL_OFF = ""
+ICON_COMPACT  = ""
+ICON_REMOTE   = ""
+ICON_MINIMIZE = ""
+ICON_CLOSE    = ""
+
+# Win32 상수 (테두리 없는 창을 작업표시줄에 표시/최소화하기 위함)
+GWL_STYLE, GWL_EXSTYLE = -16, -20
+WS_MINIMIZEBOX   = 0x00020000
+WS_EX_APPWINDOW  = 0x00040000
+WS_EX_TOOLWINDOW = 0x00000080
+SW_MINIMIZE = 6
+DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND = 33, 2
+DWMWA_BORDER_COLOR = 34
+
+# pystray 등과 함수 객체(argtypes)를 공유하지 않도록 별도 인스턴스로 로드
+_user32 = ctypes.WinDLL("user32")
+_user32.GetParent.restype = ctypes.c_void_p
+_user32.GetParent.argtypes = [ctypes.c_void_p]
+_user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+_user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+_user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+_user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 
 # 상태별 (강조색, 배지 배경)
 STATE_COLORS = {
@@ -32,6 +67,20 @@ def state_of(status, is_alarm, connected):
     if "RUN"  in status:    return "RUN"
     if "HOLD" in status:    return "HOLD"
     return "IDLE"
+
+def summary_of(machines):
+    """헤더 가동 요약 (점 색, 문구, 문구 색). 원격 페이지도 같은 문구를 사용"""
+    connected = [m for m in machines if getattr(m, "is_connected", False)]
+    alarm   = sum(1 for m in connected if getattr(m, "data", {}).get("is_alarm"))
+    running = sum(1 for m in connected if "RUN" in getattr(m, "data", {}).get("status", ""))
+
+    if alarm:
+        return "#FF453A", f"알람 {alarm}대 발생", "#FF453A"
+    if not connected:
+        return "#5A5A60", "연결된 장비 없음", COL_MUTED
+    if running:
+        return "#30D158", f"{running}대 가동 중", COL_TEXT
+    return "#98989D", f"{len(connected)}대 대기 중", COL_TEXT
 
 # ── 마우스 호버 시 안내 문구를 띄워주는 툴팁 클래스 ──────────
 class ToolTip:
@@ -70,7 +119,7 @@ class AppUI(ctk.CTk):
 
         self.init_width = 640
 
-        self.title("DN Solutions Machine Watcher v2.3")
+        self.title("DN Solutions Machine Watcher v2.4")
         ctk.set_appearance_mode("dark")
         self.configure(fg_color=COL_BG)
 
@@ -78,6 +127,8 @@ class AppUI(ctk.CTk):
         fams = set(tkfont.families(self))
         self.font_num = next((f for f in ["JetBrains Mono", "Cascadia Mono", "Cascadia Code"] if f in fams), "Consolas")
         self.font_ui = "Malgun Gothic"
+        # [v2.4] 아이콘 폰트: Win11 Fluent, Win10은 MDL2 (글리프 코드 동일)
+        self.font_icon = "Segoe Fluent Icons" if "Segoe Fluent Icons" in fams else "Segoe MDL2 Assets"
 
         self.machines = machines
         self.scroll = None
@@ -90,9 +141,15 @@ class AppUI(ctk.CTk):
         self.drag_start_x = 0
         self.drag_start_y = 0
         self._is_dragging = False
+        self._title_drag = None   # [v2.4] 헤더 드래그 시 (마우스-창 좌표 오프셋)
 
         self.setup_ui()
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
+
+        # [v2.4] 기본 타이틀바 제거 → 헤더가 타이틀바 역할 (A안)
+        self.overrideredirect(True)
+        self.bind("<Map>", self._on_map)
+        self._center_window()
 
     def setup_ui(self):
         # 1. 고정 헤더
@@ -121,35 +178,56 @@ class AppUI(ctk.CTk):
         )
         self.summary_sub.pack(side="left", padx=(7, 0), pady=(2, 0))
 
-        self.compact_btn = ctk.CTkButton(
-            self.header, text="➖", width=30, height=30,
-            fg_color="transparent", hover_color=COL_BTN,
-            font=("Segoe UI Emoji", 13),
-            command=self.toggle_compact_mode
+        # [v2.4] 창 조작 버튼 (최대화 없음). 닫기는 기존처럼 트레이로 숨김
+        self.close_btn = ctk.CTkButton(
+            self.header, text=ICON_CLOSE, width=46, height=50, corner_radius=0,
+            fg_color="transparent", hover_color=COL_CLOSE_HOV, text_color=COL_VALUE,
+            font=(self.font_icon, 10), command=self.hide_window
         )
-        self.compact_btn.pack(side="right", padx=(0, 15), pady=10)
+        self.close_btn.pack(side="right")
+        self.close_btn.bind("<Enter>", lambda e: self.close_btn.configure(text_color="#FFFFFF"))
+        self.close_btn.bind("<Leave>", lambda e: self.close_btn.configure(text_color=COL_VALUE))
+
+        self.min_btn = ctk.CTkButton(
+            self.header, text=ICON_MINIMIZE, width=46, height=50, corner_radius=0,
+            fg_color="transparent", hover_color=COL_BTN, text_color=COL_VALUE,
+            font=(self.font_icon, 10), command=self.minimize_window
+        )
+        self.min_btn.pack(side="right")
+
+        ctk.CTkFrame(self.header, width=1, height=18, corner_radius=0,
+                     fg_color=COL_BORDER).pack(side="right", padx=6)
+
+        self.compact_btn = self._header_icon_btn(ICON_COMPACT, self.toggle_compact_mode)
         self.compact_tooltip = ToolTip(self.compact_btn, "최소화 모드")
 
-        self.notify_btn = ctk.CTkButton(
-            self.header, text="🔔", width=30, height=30,
-            fg_color="transparent", hover_color=COL_BTN,
-            font=("Segoe UI Emoji", 14),
-            command=self.toggle_notify
-        )
-        self.notify_btn.pack(side="right", padx=(0, 5), pady=10)
+        self.notify_btn = self._header_icon_btn(ICON_BELL, self.toggle_notify)
         self.notify_tooltip = ToolTip(self.notify_btn, "알림: 켜짐")
 
         # [v2.2 추가] 장비 설정 버튼 (command는 MainController가 연결)
-        self.settings_btn = ctk.CTkButton(
-            self.header, text="⚙️", width=30, height=30,
-            fg_color="transparent", hover_color=COL_BTN,
-            font=("Segoe UI Emoji", 13)
-        )
-        self.settings_btn.pack(side="right", padx=(0, 5), pady=10)
+        self.settings_btn = self._header_icon_btn(ICON_SETTINGS)
         self.settings_tooltip = ToolTip(self.settings_btn, "장비 설정")
+
+        # [v2.4] 원격 모니터링 버튼 (command는 MainController가 연결)
+        self.remote_btn = self._header_icon_btn(ICON_REMOTE)
+        self.remote_tooltip = ToolTip(self.remote_btn, "원격 모니터링: 꺼짐")
+
+        # 헤더 빈 영역을 잡고 창 이동
+        for w_item in (self.header, self.summary_dot, self.summary_lbl, self.summary_sub):
+            w_item.bind("<ButtonPress-1>", self._title_press)
+            w_item.bind("<B1-Motion>", self._title_motion)
 
         # 2. 메인 컨테이너 영역 (장비 카드)
         self.build_machine_cards()
+
+    def _header_icon_btn(self, glyph, command=None):
+        btn = ctk.CTkButton(
+            self.header, text=glyph, width=32, height=30,
+            fg_color="transparent", hover_color=COL_BTN, text_color=COL_MUTED,
+            font=(self.font_icon, 15), command=command
+        )
+        btn.pack(side="right", padx=(0, 2), pady=10)
+        return btn
 
     def build_machine_cards(self):
         """장비 목록 기준으로 카드 UI를 (재)생성. 설정 변경 시에도 호출됨."""
@@ -216,6 +294,9 @@ class AppUI(ctk.CTk):
             time_l = ctk.CTkLabel(row2, text="-", font=(self.font_num, 22, "bold"), text_color=COL_SUB)
             time_l.pack(side="right")
 
+            # [v2.4] 알람 목록 (C안) — 알람일 때만 _render_alarms가 채워서 pack
+            alm_f = ctk.CTkFrame(body, fg_color="transparent", height=10)
+
             # --- [B] 최소화 모드용 컨테이너 ---
             comp_f = ctk.CTkFrame(card, fg_color="transparent", height=40)
 
@@ -234,7 +315,8 @@ class AppUI(ctk.CTk):
                 "card": card, "full_f": full_f, "comp_f": comp_f, "btn": btn,
                 "strip": strip, "badge": badge,
                 "mode": metric_vals["mode"], "tool": metric_vals["tool"], "time": time_l,
-                "c_strip": c_strip, "c_time": c_time
+                "c_strip": c_strip, "c_time": c_time,
+                "alm_f": alm_f, "alm_key": ()
             }
 
             for w_item in [card, comp_f, c_name, c_time, c_strip]:
@@ -243,14 +325,22 @@ class AppUI(ctk.CTk):
                 w_item.bind("<ButtonRelease-1>", self.on_drag_release)
 
     # ── [v2.3] 상태를 UI에 일괄 반영 ──────────────────────────
-    def apply_status(self, ip, mode, status, tool, cyc, is_alarm, connected):
+    def apply_status(self, ip, mode, status, tool, cyc, is_alarm, connected, alarms=()):
         w = self.widgets.get(ip)
         if not w: return
 
         state = state_of(status, is_alarm, connected)
         accent, badge_bg = STATE_COLORS[state]
 
-        if state == "ALARM":     badge_txt = "▲ ALARM"
+        # [v2.4] 알람 목록은 내용이 바뀔 때만 다시 그림 (0.5초마다 위젯 재생성 방지)
+        alarms = alarms if state == "ALARM" else ()
+        key = tuple((a["code"], a["msg"]) for a in alarms)
+        if key != w["alm_key"]:
+            w["alm_key"] = key
+            self._render_alarms(w["alm_f"], alarms)
+            self.fit_height()
+
+        if state == "ALARM":     badge_txt = "▲ ALARM" + (f" {len(alarms)}" if len(alarms) > 1 else "")
         elif state == "RUN":     badge_txt = "● RUN"
         elif state == "HOLD":    badge_txt = "HOLD"
         elif state == "OFFLINE": badge_txt = "OFFLINE"
@@ -274,25 +364,42 @@ class AppUI(ctk.CTk):
         else:
             w["btn"].configure(text="연결하기", fg_color=COL_ACCENT, hover_color=COL_ACCENT_HOV, text_color="#FFFFFF")
 
+    def _render_alarms(self, frame, alarms):
+        for child in frame.winfo_children():
+            child.destroy()
+        if not alarms:
+            frame.pack_forget()
+            return
+
+        ctk.CTkFrame(frame, height=1, corner_radius=0, fg_color=COL_ALM_LINE).grid(
+            row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        for i, a in enumerate(alarms, start=1):
+            ctk.CTkLabel(frame, text=a["code"], height=20, font=(self.font_num, 12, "bold"),
+                         text_color=COL_ALM_CODE).grid(row=i, column=0, sticky="nw", padx=(0, 12))
+            # 긴 메시지는 창을 넓히지 않고 줄바꿈
+            ctk.CTkLabel(frame, text=a["msg"], height=20, font=(self.font_ui, 12), text_color=COL_ALM_MSG,
+                         anchor="w", justify="left", wraplength=400).grid(row=i, column=1, sticky="w")
+            ctk.CTkLabel(frame, text=a["since"], height=20, font=(self.font_num, 11),
+                         text_color=COL_ALM_SUB).grid(row=i, column=2, sticky="ne", padx=(12, 0))
+        frame.grid_columnconfigure(1, weight=1)
+        frame.pack(fill="x", pady=(10, 0))
+
+    def fit_height(self):
+        """[v2.4] 알람 목록이 펼쳐지거나 접히면 창 높이를 내용에 맞춤 (전체 모드, 스크롤 없는 경우만)"""
+        if self.is_compact or self.needs_scroll:
+            return
+        self.update_idletasks()
+        need = self.header.winfo_reqheight() + 1 + self.scroll.winfo_reqheight() + 20
+        h = max(self.init_height, min(850, need))
+        if h != self.winfo_height():
+            self.geometry(f"{self.init_width}x{h}")
+
     # ── [v2.3] 헤더 실시간 가동 요약 갱신 ─────────────────────
     def update_summary(self):
-        total = len(self.machines)
-        connected = [m for m in self.machines if getattr(m, "is_connected", False)]
-        alarm   = sum(1 for m in connected if getattr(m, "data", {}).get("is_alarm"))
-        running = sum(1 for m in connected if "RUN" in getattr(m, "data", {}).get("status", ""))
-
-        if alarm:
-            col, txt, txt_col = "#FF453A", f"알람 {alarm}대 발생", "#FF453A"
-        elif not connected:
-            col, txt, txt_col = "#5A5A60", "연결된 장비 없음", COL_MUTED
-        elif running:
-            col, txt, txt_col = "#30D158", f"{running}대 가동 중", COL_TEXT
-        else:
-            col, txt, txt_col = "#98989D", f"{len(connected)}대 대기 중", COL_TEXT
-
+        col, txt, txt_col = summary_of(self.machines)
         self.summary_dot.configure(text_color=col)
         self.summary_lbl.configure(text=txt, text_color=txt_col)
-        self.summary_sub.configure(text=f"/  전체 {total}대")
+        self.summary_sub.configure(text=f"/  전체 {len(self.machines)}대")
 
     # ── 알림 토글 로직 ──────────────────────────────────────
     def toggle_notify(self):
@@ -300,11 +407,21 @@ class AppUI(ctk.CTk):
         self.notify_enabled.set(current_state)
 
         if current_state:
-            self.notify_btn.configure(text="🔔")
+            self.notify_btn.configure(text=ICON_BELL)
             self.notify_tooltip.text = "알림: 켜짐"
         else:
-            self.notify_btn.configure(text="🔕")
+            self.notify_btn.configure(text=ICON_BELL_OFF)
             self.notify_tooltip.text = "알림: 꺼짐"
+
+    # ── [v2.4] 원격 모니터링 버튼 상태 표시 ──────────────────
+    def set_remote_state(self, on, urls=()):
+        if on:
+            self.remote_btn.configure(fg_color=COL_REMOTE_ON, hover_color=COL_REMOTE_ON,
+                                      text_color=STATE_COLORS["RUN"][0])
+            self.remote_tooltip.text = "원격 모니터링: 켜짐 (절전 차단 중)\n" + "\n".join(urls)
+        else:
+            self.remote_btn.configure(fg_color="transparent", hover_color=COL_BTN, text_color=COL_MUTED)
+            self.remote_tooltip.text = "원격 모니터링: 꺼짐"
     # ─────────────────────────────────────────────────────────────
 
     def on_drag_start(self, event):
@@ -336,7 +453,6 @@ class AppUI(ctk.CTk):
             self.is_compact = True
 
             self.attributes("-topmost", True)
-            self.overrideredirect(True)
 
             self.header.pack_forget()
             self.header_line.pack_forget()
@@ -353,7 +469,6 @@ class AppUI(ctk.CTk):
             self.geometry(f"{w}x{h}")
         else:
             self.is_compact = False
-            self.overrideredirect(False)
 
             self.minsize(self.init_width, self.init_height)
             self.geometry(f"{self.init_width}x{self.init_height}")
@@ -367,6 +482,7 @@ class AppUI(ctk.CTk):
             for ip, w_ref in self.widgets.items():
                 w_ref["comp_f"].pack_forget()
                 w_ref["full_f"].pack(fill="x")
+            self.fit_height()   # 최소화 모드 중에 생긴 알람 목록 반영
 
     def restore_from_click(self):
         if self.is_compact:
@@ -380,10 +496,60 @@ class AppUI(ctk.CTk):
         self.deiconify()
         self.is_hidden = False
 
-    def show_emergency_popup(self, machine_name):
+    # ── [v2.4] 테두리 없는 창 (커스텀 타이틀바) ───────────────
+    def _title_press(self, event):
+        self._title_drag = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
+
+    def _title_motion(self, event):
+        if self._title_drag:
+            dx, dy = self._title_drag
+            self.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def _hwnd(self):
+        return _user32.GetParent(self.winfo_id())
+
+    def _on_map(self, event):
+        if event.widget is self:
+            self._apply_frameless_style()
+
+    def _apply_frameless_style(self):
+        """overrideredirect 창은 작업표시줄에서 빠지고 최소화가 안 되므로
+        확장 스타일을 일반 앱 창(APPWINDOW)으로 바꿔준다. 첫 표시 때 한 번만 실제 변경됨."""
+        hwnd = self._hwnd()
+        ex = _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+        want = (ex & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+        if want == ex:
+            return
+        _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want)
+        _user32.SetWindowLongPtrW(hwnd, GWL_STYLE, _user32.GetWindowLongPtrW(hwnd, GWL_STYLE) | WS_MINIMIZEBOX)
+        # Win11 둥근 모서리 + 테두리색 (Win10에서는 무시됨)
+        try:
+            r, g, b = (int(COL_BORDER[i:i + 2], 16) for i in (1, 3, 5))
+            dwm = ctypes.windll.dwmapi
+            dwm.DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                                      ctypes.byref(ctypes.c_int(DWMWCP_ROUND)), 4)
+            dwm.DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR,
+                                      ctypes.byref(ctypes.c_uint(r | g << 8 | b << 16)), 4)
+        except Exception:
+            pass
+        # 스타일 변경을 작업표시줄에 반영하려면 다시 표시해야 함
+        self.withdraw()
+        self.after(10, self.deiconify)
+
+    def _center_window(self):
+        x = (self.winfo_screenwidth() - self.init_width) // 2
+        y = (self.winfo_screenheight() - self.init_height) // 3
+        self.geometry(f"{self.init_width}x{self.init_height}+{x}+{y}")
+
+    def minimize_window(self):
+        # overrideredirect 창은 tk의 iconify()가 막혀 있어 Win32로 직접 최소화
+        _user32.ShowWindow(self._hwnd(), SW_MINIMIZE)
+
+    def show_emergency_popup(self, machine_name, alarms=()):
         popup = ctk.CTkToplevel(self, fg_color=COL_BG)
         popup.title("ALARM")
-        popup.geometry("300x256")
+        # [v2.4] 알람 내용 길이에 따라 높이가 달라지므로 고정 크기 대신 내용 크기로 (너비만 300 확보)
+        tk.Frame(popup, width=300, height=1, bg=COL_BG).pack()
         popup.resizable(False, False)
         popup.attributes("-topmost", True)
         # customtkinter가 생성 직후(200ms) 기본 아이콘으로 덮어쓰므로 그 뒤에 적용
@@ -397,13 +563,28 @@ class AppUI(ctk.CTk):
 
         ctk.CTkLabel(popup, text="ALARM", font=(self.font_ui, 18, "bold"), text_color="#FF453A").pack()
         ctk.CTkLabel(popup, text=machine_name, font=(self.font_ui, 15, "bold"), text_color=COL_TEXT).pack(pady=(2, 0))
-        now = datetime.datetime.now().strftime("%H:%M:%S")
+
+        # [v2.4] 알람 번호·내용 (최대 3건, 나머지는 건수만)
+        if alarms:
+            box = ctk.CTkFrame(popup, fg_color=COL_CARD, corner_radius=8)
+            box.pack(fill="x", padx=20, pady=(12, 4))
+            for a in alarms[:3]:
+                ctk.CTkLabel(box, text=a["code"], height=18, anchor="w", font=(self.font_num, 12, "bold"),
+                             text_color=COL_ALM_CODE).pack(fill="x", padx=12, pady=(8, 0))
+                ctk.CTkLabel(box, text=a["msg"], height=18, anchor="w", justify="left", wraplength=236,
+                             font=(self.font_ui, 12), text_color=COL_VALUE).pack(fill="x", padx=12)
+            if len(alarms) > 3:
+                ctk.CTkLabel(box, text=f"외 {len(alarms) - 3}건", height=18, anchor="w",
+                             font=(self.font_ui, 11), text_color=COL_MUTED).pack(fill="x", padx=12, pady=(4, 0))
+            ctk.CTkFrame(box, height=8, fg_color="transparent").pack()
+
+        now = alarms[0]["since"] if alarms else datetime.datetime.now().strftime("%H:%M:%S")
         ctk.CTkLabel(popup, text=f"{now} 발생 · 장비 상태를 확인하세요",
                      font=(self.font_ui, 11), text_color=COL_MUTED).pack(pady=(0, 14))
         ctk.CTkButton(popup, text="확인", width=120, height=30, corner_radius=8,
                       fg_color="#33100D", hover_color="#4A1815", text_color="#FF6961",
                       border_width=1, border_color="#6E2420",
-                      font=(self.font_ui, 12, "bold"), command=popup.destroy).pack()
+                      font=(self.font_ui, 12, "bold"), command=popup.destroy).pack(pady=(0, 20))
         self.bell()
 
 
