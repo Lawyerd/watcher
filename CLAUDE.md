@@ -11,7 +11,8 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 | `fanuc_logic.py` | FOCAS 통신 (`FanucMachine`). 상태/사이클타임(파라미터 6757·6758)/공구번호(PMC D0450·D0452) 읽기 |
 | `monitor_ui.py` | UI 전부 (`AppUI`, `SettingsDialog`, 다크 테마 팔레트). 상태 반영은 `AppUI.apply_status()` 한 곳으로 일원화. 기본 타이틀바 없음(헤더가 타이틀바) |
 | `notifier.py` | 상태 전이 감지 → winotify 토스트 + `logs/history_YYYY-MM-DD.csv` 가공 이력 + `logs/alarm_YYYY-MM-DD.csv` 알람 발생/해제 이력 기록 |
-| `remote_server.py` | 원격 모니터링 (`RemoteServer`). 읽기 전용 HTTP 서버(포트 8765): `/` 휴대폰 페이지, `/api/status` JSON. 켜져 있는 동안 시스템 절전 차단 |
+| `remote_server.py` | 원격 모니터링 (`RemoteServer`). 읽기 전용 HTTP 서버(포트 8765): `/api/status`(스냅샷), `/api/history`·`/api/alarms`(`?date=`로 logs/ CSV), 홈 화면 아이콘·manifest. 켜져 있는 동안 시스템 절전 차단 |
+| `remote_page.py` | 휴대폰 페이지 HTML (B안: 가동/정지/알람 타일 + 현황/가공 이력/알람 이력 탭). 집에서는 Tailscale로 접속 |
 | `machines.json` | 장비 목록 (앱 내 ⚙️ 설정 UI로 편집 가능, 재시작 불필요) |
 | `read_status.py`, `connection_test.py` | 단독 연결 테스트 스크립트 |
 
@@ -31,6 +32,7 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 11. **원격 서버 스레드에서 FOCAS 호출 금지** (1번 제약). 메인 루프가 `publish_snapshot()`으로 넘긴 스냅샷만 응답한다. 절전 차단(`SetThreadExecutionState`)은 호출한 스레드 기준이라 메인 스레드에서 호출.
 12. **테두리 없는 창**: `overrideredirect(True)`는 시작 시 1회만. overrideredirect 창은 작업표시줄에서 빠지고 `iconify()`가 막히므로 `_apply_frameless_style()`에서 WS_EX_APPWINDOW로 바꾸고, 최소화는 Win32 `ShowWindow(SW_MINIMIZE)`로 한다. `attributes("-topmost")`는 스타일을 유지함(실측).
 13. **알람 내용은 `cnc_rdalmmsg2`로 알람 상태(`stat.alarm`)일 때만 읽는다.** 발생 시각은 FOCAS가 주지 않아 처음 본 시각을 유지. 장비 화면이 한글 설정이라 메시지가 cp949로 내려옴 (`#3000=1` 테스트 → "MC3001 매크로 알람" 실측 확인). 알람 이력 조회 함수(`cnc_rdalmhistry` 류)는 이력 기록 정지가 필요할 수 있어 사용하지 않음.
+14. **원격 접속 방화벽**: 공장 PC 네트워크는 "공용", Tailscale 어댑터는 "개인"으로 잡힌다. exe별 허용 규칙은 버전마다 경로가 바뀌므로 포트 규칙(8765, 원격 IP 100.64.0.0/10)으로 허용하는 게 안정적.
 
 ## 빌드 & 배포
 

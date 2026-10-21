@@ -25,6 +25,8 @@ class StatusNotifier:
         self.last_states = {}
         self.active_alarms = {}    # [v2.4] 장비별 현재 알람 {code: alarm} — 발생/해제 이력 비교용
         self._csv_lock = threading.Lock()
+        self._count_date = None    # [v2.4] 오늘 가공 완료 횟수 캐시 (날짜가 바뀌면 CSV에서 다시 셈)
+        self._counts = {}
 
         # [v2.0 추가] 로그 폴더 설정
         self.log_dir = os.path.join(base_dir, "logs")
@@ -54,8 +56,24 @@ class StatusNotifier:
     def log_to_csv(self, machine_name, start_time, end_time, cycle_time):
         """가공 이력을 일자별 CSV 파일로 저장합니다."""
         today = datetime.datetime.now().strftime("%Y-%m-%d")
+        counts = self.today_counts()
+        counts[machine_name] = counts.get(machine_name, 0) + 1
         self._append_csv(f"history_{today}.csv", HISTORY_HEADER,
                          [[today, machine_name, start_time, end_time, cycle_time]])
+
+    def today_counts(self):
+        """[v2.4] 오늘 가공 완료 횟수 {장비명: n}. 앱을 재시작해도 오늘 CSV에서 다시 센다."""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        if self._count_date != today:
+            self._count_date, self._counts = today, {}
+            try:
+                with open(os.path.join(self.log_dir, f"history_{today}.csv"), newline='', encoding='utf-8-sig') as f:
+                    for row in list(csv.reader(f))[1:]:
+                        if len(row) >= 2:
+                            self._counts[row[1]] = self._counts.get(row[1], 0) + 1
+            except OSError:
+                pass
+        return self._counts
 
     def log_alarm_changes(self, machine_name, alarms):
         """[v2.4] 알람 발생/해제를 logs/alarm_YYYY-MM-DD.csv에 기록 (알림 ON/OFF와 무관)"""

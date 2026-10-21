@@ -1,14 +1,21 @@
+import os
+import re
+import csv
 import json
 import time
 import ctypes
 import socket
 import logging
+import datetime
 import threading
+from urllib.parse import urlsplit, parse_qs
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from remote_page import INDEX_HTML, MANIFEST
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # 날짜 파라미터 검증 (경로 조작 방지)
 
 # 절전 차단 (SetThreadExecutionState) — 호출한 스레드가 살아 있는 동안 유지되므로 메인 스레드에서 호출
 ES_CONTINUOUS      = 0x80000000
@@ -39,11 +46,13 @@ def local_urls(port):
 class RemoteServer:
     """[v2.4] 원격 모니터링용 읽기 전용 HTTP 서버.
     FOCAS 핸들은 만든 스레드(메인)에서만 유효하므로 서버 스레드는 장비에 직접 접근하지 않고,
-    메인 루프가 update_snapshot()으로 넘겨준 최신 상태만 응답한다."""
+    메인 루프가 update_snapshot()으로 넘겨준 최신 상태와 logs/ CSV 이력만 응답한다."""
 
-    def __init__(self, port=DEFAULT_PORT, host="0.0.0.0"):
+    def __init__(self, port=DEFAULT_PORT, host="0.0.0.0", log_dir=None, icons=None):
         self.port = port
         self.host = host
+        self.log_dir = log_dir      # 가공/알람 이력 CSV 폴더 (notifier와 동일)
+        self.icons = icons or {}    # {192: png bytes, 512: png bytes} 홈 화면 아이콘
         self._httpd = None
         self._lock = threading.Lock()
         self._snapshot = {"summary": {}, "machines": []}
@@ -63,7 +72,34 @@ class RemoteServer:
             data = dict(self._snapshot)
             # 메인 루프가 멈추면 값이 갱신되지 않으므로 경과 시간을 함께 내려준다
             data["age_sec"] = round(time.monotonic() - self._snapshot_at, 1)
-        return json.dumps(data, ensure_ascii=False).encode("utf-8")
+        return data
+
+    def _log_rows(self, prefix, query):
+        """logs/{prefix}_{날짜}.csv 행 목록 (헤더 제외). 날짜는 ?date=YYYY-MM-DD, 기본 오늘"""
+        today = datetime.date.today().isoformat()
+        date = query.get("date", [today])[0]
+        if not DATE_RE.match(date):
+            date = today
+        rows = []
+        if self.log_dir:
+            try:
+                with open(os.path.join(self.log_dir, f"{prefix}_{date}.csv"), newline="", encoding="utf-8-sig") as f:
+                    rows = list(csv.reader(f))[1:]
+            except OSError:
+                pass   # 그 날 기록 없음
+        return {"date": date, "today": today}, rows
+
+    def _history_json(self, query):
+        data, rows = self._log_rows("history", query)
+        data["rows"] = [{"machine": r[1], "start": r[2], "end": r[3], "cycle": r[4]}
+                        for r in reversed(rows) if len(r) >= 5]
+        return data
+
+    def _alarms_json(self, query):
+        data, rows = self._log_rows("alarm", query)
+        data["rows"] = [{"time": r[1], "machine": r[2], "kind": r[3], "code": r[4], "msg": r[5]}
+                        for r in reversed(rows) if len(r) >= 6]
+        return data
 
     def start(self):
         if self.running:
@@ -72,13 +108,25 @@ class RemoteServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                path = self.path.split("?", 1)[0]
+                url = urlsplit(self.path)
+                path, query = url.path, parse_qs(url.query)
                 if path in ("/", "/index.html"):
                     self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
                 elif path == "/api/status":
-                    self._send(200, "application/json; charset=utf-8", server._status_json())
+                    self._json(server._status_json())
+                elif path == "/api/history":
+                    self._json(server._history_json(query))
+                elif path == "/api/alarms":
+                    self._json(server._alarms_json(query))
+                elif path == "/manifest.webmanifest":
+                    self._send(200, "application/manifest+json", MANIFEST.encode("utf-8"))
+                elif path in ("/icon-192.png", "/icon-512.png") and int(path[6:9]) in server.icons:
+                    self._send(200, "image/png", server.icons[int(path[6:9])])
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
+
+            def _json(self, data):
+                self._send(200, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
             def _send(self, code, ctype, body):
                 self.send_response(code)
@@ -111,80 +159,3 @@ class RemoteServer:
             httpd.server_close()
         threading.Thread(target=_close, daemon=True).start()
         logger.info("원격 모니터링 종료")
-
-
-# ── 휴대폰용 상태 페이지 (기본형, 3초마다 /api/status 갱신) ──────────
-INDEX_HTML = """<!doctype html>
-<html lang="ko"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#131316">
-<title>CNC Watcher</title>
-<style>
-  body { margin: 0; background: #131316; color: #F2F2F7; font-family: -apple-system, "Malgun Gothic", sans-serif; }
-  header { display: flex; align-items: baseline; gap: 8px; padding: 18px 16px 14px; border-bottom: 1px solid #2C2C33; }
-  header b { font-size: 17px; } header span { font-size: 13px; color: #636366; }
-  .dot { font-size: 13px; }
-  main { padding: 6px 12px; }
-  .card { display: flex; background: #1C1C21; border-radius: 12px; margin: 10px 0; padding: 12px 14px 12px 8px; gap: 12px; }
-  .strip { width: 5px; border-radius: 3px; }
-  .body { flex: 1; min-width: 0; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .name { font-size: 17px; font-weight: 700; }
-  .badge { font-size: 12px; font-weight: 700; border-radius: 12px; padding: 4px 12px; }
-  .meta { font-size: 11px; color: #636366; margin-top: 12px; }
-  .meta b { font: 15px ui-monospace, Menlo, Consolas, monospace; color: #D1D1D6; margin: 0 14px 0 4px; }
-  .time { font: 700 24px ui-monospace, Menlo, Consolas, monospace; margin-top: 10px; }
-  .alm { display: grid; grid-template-columns: auto 1fr auto; gap: 5px 10px; font-size: 13px;
-         margin-top: 10px; padding-top: 8px; border-top: 1px solid #3A1B18; }
-  .alm .c { font: 700 13px ui-monospace, Menlo, Consolas, monospace; color: #FF6961; }
-  .alm .m { color: #F2C9C6; overflow-wrap: anywhere; }
-  .alm .t { font: 12px ui-monospace, Menlo, Consolas, monospace; color: #8E5A56; }
-  footer { font-size: 12px; color: #636366; text-align: center; padding: 8px 0 24px; }
-  footer.warn { color: #FFD60A; }
-</style></head>
-<body>
-<header><span class="dot" id="dot">●</span><b id="sum">불러오는 중…</b><span id="total"></span></header>
-<main id="list"></main>
-<footer id="foot"></footer>
-<script>
-const C = { RUN:["#30D158","#0E2E1A"], ALARM:["#FF453A","#3A0E0C"], HOLD:["#FFD60A","#332B08"],
-            IDLE:["#98989D","#26262C"], OFFLINE:["#5A5A60","#222226"] };
-const BADGE = { RUN:"● RUN", ALARM:"▲ ALARM", HOLD:"HOLD", OFFLINE:"OFFLINE" };
-const badge = m => m.state === "ALARM" && m.alarms.length > 1 ? `▲ ALARM ${m.alarms.length}` : (BADGE[m.state] || m.status);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-
-function render(d) {
-  const s = d.summary;
-  document.getElementById("dot").style.color = s.color;
-  document.getElementById("sum").textContent = s.text;
-  document.getElementById("total").textContent = "/ 전체 " + s.total + "대";
-  document.getElementById("list").innerHTML = d.machines.map(m => {
-    const [fg, bg] = C[m.state] || C.IDLE, on = m.connected;
-    return `<div class="card"><div class="strip" style="background:${fg}"></div><div class="body">
-      <div class="row"><span class="name">${esc(m.name)}</span>
-        <span class="badge" style="color:${fg};background:${bg}">${esc(badge(m))}</span></div>
-      <div class="meta">MODE<b>${on ? esc(m.mode) : "-"}</b>TOOL<b>${on ? esc(m.tool) : "-"}</b>NEXT<b>${on ? esc(m.next_tool) : "-"}</b></div>
-      <div class="time" style="color:${m.state === "ALARM" ? fg : (on ? "#F2F2F7" : "#636366")}">${on ? esc(m.cycle_time) : "-"}</div>
-      ${m.state === "ALARM" && m.alarms.length ? `<div class="alm">${m.alarms.map(a =>
-        `<span class="c">${esc(a.code)}</span><span class="m">${esc(a.msg)}</span><span class="t">${esc(a.since)}</span>`).join("")}</div>` : ""}
-    </div></div>`;
-  }).join("");
-  const foot = document.getElementById("foot");
-  foot.className = d.age_sec > 15 ? "warn" : "";
-  foot.textContent = d.age_sec > 15 ? `PC 프로그램이 ${Math.round(d.age_sec)}초째 응답 없음` : "마지막 갱신 " + d.updated;
-}
-
-async function tick() {
-  try {
-    const r = await fetch("/api/status", { cache: "no-store" });
-    render(await r.json());
-  } catch (e) {
-    const foot = document.getElementById("foot");
-    foot.className = "warn"; foot.textContent = "PC에 연결할 수 없음 (원격 모니터링 꺼짐 또는 네트워크 문제)";
-  }
-}
-tick(); setInterval(tick, 3000);
-</script>
-</body></html>
-"""

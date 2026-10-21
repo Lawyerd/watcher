@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import io
 import ctypes
 import datetime
 import socket
@@ -103,11 +104,21 @@ class MainController:
         self.app.settings_btn.configure(command=self.open_settings)
 
         # [v2.4] 원격 모니터링 (휴대폰 등에서 상태 확인용 읽기 전용 서버)
-        self.remote = RemoteServer()
+        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=self._web_icons())
         self.app.remote_btn.configure(command=self.toggle_remote)
 
         self.setup_tray()
         self.update_loop()
+
+    def _web_icons(self):
+        """휴대폰 홈 화면 아이콘용 PNG (192/512px)"""
+        icons = {}
+        img = draw_watcher_icon()
+        for px in (192, 512):
+            buf = io.BytesIO()
+            img.resize((px, px), Image.LANCZOS).save(buf, format="PNG")
+            icons[px] = buf.getvalue()
+        return icons
 
     def _bind_conn_buttons(self):
         for m in self.machines:
@@ -202,21 +213,33 @@ class MainController:
         self.publish_snapshot()
         self.app.set_remote_state(True, local_urls(self.remote.port))
 
+    def _track_state(self, m):
+        """[v2.4] 상태(RUN/ALARM/…)가 바뀐 시각 기록 → 휴대폰 페이지의 'N분째' 표시용"""
+        st = state_of(m.data["status"], m.data["is_alarm"], m.is_connected)
+        if getattr(m, "_state", None) != st:
+            m._state, m._state_since = st, datetime.datetime.now()
+
     def publish_snapshot(self):
         """원격 서버로 넘길 상태 스냅샷 (메인 스레드에서 생성 → 서버 스레드는 FOCAS 접근 안 함)"""
+        now = datetime.datetime.now()
+        counts = self.notifier.today_counts()
         machines = []
         for m in self.machines:
             d = m.data
+            since = getattr(m, "_state_since", now)
             machines.append({
                 "name": m.name, "connected": m.is_connected,
                 "state": state_of(d["status"], d["is_alarm"], m.is_connected),
                 "status": d["status"], "mode": d["mode"], "tool": d["tool"],
                 "next_tool": d["next_tool"], "cycle_time": d["cycle_time"],
                 "alarms": d["alarms"],
+                "state_since": since.strftime("%H:%M:%S"),
+                "state_sec": int((now - since).total_seconds()),
+                "done_today": counts.get(m.name, 0),
             })
         col, txt, _ = summary_of(self.machines)
         self.remote.update_snapshot({
-            "updated": datetime.datetime.now().strftime("%H:%M:%S"),
+            "updated": now.strftime("%H:%M:%S"),
             "summary": {"color": col, "text": txt, "total": len(self.machines)},
             "machines": machines,
         })
@@ -263,6 +286,8 @@ class MainController:
 
                 if not self.app.is_hidden:
                     self.app.apply_status(m.ip, "-", "OFFLINE", "-", "-", False, False)
+
+            self._track_state(m)
 
         if not self.app.is_hidden:
             self.app.update_summary()

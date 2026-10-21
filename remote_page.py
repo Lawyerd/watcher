@@ -1,0 +1,246 @@
+# [v2.4] 휴대폰용 원격 모니터링 페이지 (B안: 요약 타일 + 현황/가공 이력/알람 이력 탭)
+# remote_server.py가 그대로 응답한다. 색은 monitor_ui.py의 다크 팔레트와 맞춤.
+
+MANIFEST = """{
+  "name": "CNC Watcher",
+  "short_name": "CNC Watcher",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#131316",
+  "theme_color": "#131316",
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}"""
+
+INDEX_HTML = """<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131316">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CNC Watcher">
+<title>CNC Watcher</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #131316; color: #F2F2F7; font-family: -apple-system, "Malgun Gothic", sans-serif;
+         -webkit-tap-highlight-color: transparent; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .top { display: flex; justify-content: space-between; align-items: baseline;
+         padding: calc(14px + env(safe-area-inset-top)) 16px 8px; }
+  .top b { font-size: 16px; }
+  #top-st { font-size: 12px; color: #636366; }
+  #top-st.warn { color: #FFD60A; }
+  main { padding: 0 12px calc(86px + env(safe-area-inset-bottom)); }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 4px; }
+  .tile { border-radius: 14px; padding: 12px 0 10px; text-align: center; }
+  .tile b { display: block; font: 500 28px ui-monospace, Menlo, Consolas, monospace; }
+  .tile span { font-size: 12px; }
+  .offline { font-size: 12px; color: #636366; text-align: center; margin-top: 8px; }
+  .list { background: #1C1C21; border-radius: 14px; margin-top: 12px; overflow: hidden; }
+  .m, .h { padding: 12px 14px; border-top: 1px solid #2C2C33; }
+  .m:first-child, .h:first-child { border-top: 0; }
+  .m { cursor: pointer; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .bar { width: 4px; height: 38px; border-radius: 2px; flex: none; }
+  .name { font-size: 16px; font-weight: 700; }
+  .st { font-size: 12px; margin-top: 2px; }
+  .right { text-align: right; flex: none; }
+  .cyc { font-size: 18px; }
+  .meta { font-size: 12px; color: #636366; margin-top: 2px; }
+  .detail { margin: 12px 0 0 14px; padding-top: 10px; border-top: 1px dashed #2C2C33; font-size: 13px;
+            display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; }
+  .detail .k { color: #636366; }
+  .detail .v { color: #D1D1D6; }
+  .alm { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr auto; gap: 5px 10px;
+         margin-top: 4px; padding-top: 8px; border-top: 1px solid #3A1B18; }
+  .alm .c { color: #FF6961; font-weight: 700; }
+  .alm .msg, .amsg { color: #F2C9C6; overflow-wrap: anywhere; }
+  .alm .t { color: #8E5A56; font-size: 12px; }
+  .amsg { font-size: 13px; margin-top: 4px; }
+  .hint { font-size: 12px; color: #636366; text-align: center; margin: 12px 0; }
+  .datebar { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 10px; }
+  .datebar b { font-size: 15px; }
+  .datebar button { background: #1C1C21; color: #F2F2F7; border: 0; border-radius: 10px; width: 46px; height: 38px; font-size: 15px; }
+  .datebar button:disabled { opacity: .3; }
+  .sum { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { background: #1C1C21; border-radius: 10px; padding: 6px 10px; font-size: 12px; color: #8E8E93; }
+  .chip b { color: #F2F2F7; }
+  .kind { font-size: 11px; border-radius: 8px; padding: 2px 8px; }
+  .empty { padding: 32px 0; text-align: center; color: #636366; font-size: 13px; }
+  nav { position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(3, 1fr);
+        background: #101013; border-top: 1px solid #2C2C33; padding: 8px 0 calc(10px + env(safe-area-inset-bottom)); }
+  nav button { background: none; border: 0; color: #636366; font-size: 11px; font-family: inherit;
+               display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  nav button.on { color: #F2F2F7; }
+  nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8;
+            stroke-linecap: round; stroke-linejoin: round; }
+</style></head>
+<body>
+<div class="top"><b>CNC Watcher</b><span id="top-st">연결 중…</span></div>
+<main id="view"><div class="empty">불러오는 중…</div></main>
+<nav>
+  <button class="on" data-tab="now"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>현황</button>
+  <button data-tab="hist"><svg viewBox="0 0 24 24"><path d="M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17M11 6h9M11 12h9M11 18h9"/></svg>가공 이력</button>
+  <button data-tab="alarm"><svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>알람 이력</button>
+</nav>
+<script>
+const C = { RUN:["#30D158","#0E2E1A"], ALARM:["#FF453A","#3A0E0C"], HOLD:["#FFD60A","#332B08"],
+            IDLE:["#98989D","#26262C"], OFFLINE:["#5A5A60","#222226"] };
+const LABEL = { RUN:"가공 중", HOLD:"일시정지", IDLE:"정지", ALARM:"알람", OFFLINE:"연결 끊김" };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const $ = id => document.getElementById(id);
+let tab = "now", last = null, log = null, date = null, today = null, ticks = 0;
+const expanded = new Set();
+
+function ago(s) {
+  if (s < 60) return "방금";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "분째";
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}시간 ${m % 60}분째` : Math.floor(h / 24) + "일째";
+}
+
+function setTop(d, err) {
+  const t = $("top-st");
+  if (!err && d.age_sec > 15) err = `PC 프로그램 응답 없음 (${Math.round(d.age_sec)}초)`;
+  t.className = err ? "warn" : "";
+  t.textContent = err || d.updated + " 갱신";
+}
+
+// ── 현황 탭 ──────────────────────────────────────────
+function tile(v, label, st) {
+  const [fg, bg] = C[st];
+  return `<div class="tile" style="background:${v ? bg : "#1C1C21"};color:${v ? fg : "#636366"}"><b>${v}</b><span>${label}</span></div>`;
+}
+
+function stateLine(m) {
+  if (m.state === "OFFLINE") return "연결 끊김";
+  const head = m.state === "ALARM" && m.alarms.length ? m.alarms[0].code : LABEL[m.state];
+  return head + " · " + ago(m.state_sec);
+}
+
+function machineRow(m) {
+  const [fg] = C[m.state] || C.IDLE, on = m.connected;
+  const stCol = m.state === "IDLE" || m.state === "OFFLINE" ? "#8E8E93" : fg;
+  const cycCol = m.state === "ALARM" ? fg : (on ? "#F2F2F7" : "#636366");
+  let h = `<div class="m" data-name="${esc(m.name)}"><div class="row">
+    <div class="who"><span class="bar" style="background:${fg}"></span><div style="min-width:0">
+      <div class="name">${esc(m.name)}</div><div class="st" style="color:${stCol}">${esc(stateLine(m))}</div></div></div>
+    <div class="right"><div class="cyc mono" style="color:${cycCol}">${on ? esc(m.cycle_time) : "-"}</div>
+      <div class="meta">${on ? esc(m.tool) + " · " : ""}${m.done_today}회</div></div></div>`;
+  if (expanded.has(m.name)) {
+    h += `<div class="detail">
+      <span class="k">모드</span><span class="v mono">${on ? esc(m.mode) : "-"}</span>
+      <span class="k">공구</span><span class="v mono">${on ? `${esc(m.tool)} → 대기 ${esc(m.next_tool)}` : "-"}</span>
+      <span class="k">상태</span><span class="v">${esc(LABEL[m.state] || m.status)} · ${esc(m.state_since)}부터</span>
+      <span class="k">오늘 완료</span><span class="v">${m.done_today}회</span>
+      ${m.state === "ALARM" && m.alarms.length ? `<div class="alm">${m.alarms.map(a =>
+        `<span class="c mono">${esc(a.code)}</span><span class="msg">${esc(a.msg)}</span><span class="t mono">${esc(a.since)}</span>`).join("")}</div>` : ""}
+    </div>`;
+  }
+  return h + "</div>";
+}
+
+function renderNow() {
+  if (!last) return;
+  const ms = last.machines, n = sts => ms.filter(m => sts.includes(m.state)).length;
+  const off = n(["OFFLINE"]);
+  $("view").innerHTML = `<div class="tiles">${tile(n(["RUN"]), "가동", "RUN")}${tile(n(["HOLD", "IDLE"]), "정지", "IDLE")}${tile(n(["ALARM"]), "알람", "ALARM")}</div>`
+    + (off ? `<div class="offline">연결 끊긴 장비 ${off}대</div>` : "")
+    + `<div class="list">${ms.map(machineRow).join("")}</div>`
+    + `<div class="hint">장비를 누르면 상세 정보</div>`;
+}
+
+// ── 가공 이력 / 알람 이력 탭 (logs/ CSV) ─────────────────
+function dateBar() {
+  const isToday = date === today;
+  return `<div class="datebar"><button data-day="-1" aria-label="이전 날">◀</button>
+    <b>${esc(date)}${isToday ? " (오늘)" : ""}</b>
+    <button data-day="1" aria-label="다음 날"${isToday ? " disabled" : ""}>▶</button></div>`;
+}
+
+function renderLog() {
+  const rows = log.rows;
+  let h = dateBar();
+  if (tab === "hist") {
+    const cnt = {};
+    rows.forEach(r => cnt[r.machine] = (cnt[r.machine] || 0) + 1);
+    h += `<div class="sum">${Object.keys(cnt).map(k => `<span class="chip">${esc(k)} <b>${cnt[k]}회</b></span>`).join("")}</div>`;
+    h += rows.length ? `<div class="list">${rows.map(r => `<div class="h row">
+        <div><b>${esc(r.machine)}</b><div class="meta mono">${esc(r.start)} → ${esc(r.end)}</div></div>
+        <span class="mono cyc">${esc(r.cycle)}</span></div>`).join("")}</div>`
+      : `<div class="empty">이 날 가공 이력이 없어요</div>`;
+  } else {
+    h += rows.length ? `<div class="list">${rows.map(r => {
+        const raised = r.kind === "발생";
+        return `<div class="h"><div class="row">
+          <span><span class="mono" style="color:#FF6961;font-weight:700">${esc(r.code)}</span> <b style="margin-left:6px">${esc(r.machine)}</b></span>
+          <span><span class="kind" style="${raised ? "color:#FF453A;background:#3A0E0C" : "color:#98989D;background:#26262C"}">${esc(r.kind)}</span>
+            <span class="mono meta">${esc(r.time)}</span></span></div>
+          <div class="amsg">${esc(r.msg)}</div></div>`;
+      }).join("")}</div>`
+      : `<div class="empty">이 날 알람 이력이 없어요</div>`;
+  }
+  $("view").innerHTML = h;
+}
+
+async function loadLog() {
+  const want = tab, api = want === "hist" ? "history" : "alarms";
+  try {
+    const r = await fetch(`/api/${api}` + (date ? `?date=${date}` : ""), { cache: "no-store" });
+    const d = await r.json();
+    if (tab !== want) return;   // 응답 오는 사이 탭을 바꾼 경우
+    log = d; date = d.date; today = d.today;
+    renderLog();
+  } catch (e) { setTop(null, "PC에 연결할 수 없음"); }
+}
+
+function shiftDate(n) {
+  const d = new Date(date + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  const s = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (s > today) return;
+  date = s;
+  loadLog();
+}
+
+// ── 이벤트 / 갱신 ─────────────────────────────────────
+$("view").addEventListener("click", e => {
+  const day = e.target.closest("[data-day]");
+  if (day) return shiftDate(+day.dataset.day);
+  const row = e.target.closest(".m");
+  if (row && tab === "now") {
+    const n = row.dataset.name;
+    expanded.has(n) ? expanded.delete(n) : expanded.add(n);
+    renderNow();
+  }
+});
+
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  window.scrollTo(0, 0);
+  if (tab === "now") renderNow();
+  else { $("view").innerHTML = `<div class="empty">불러오는 중…</div>`; loadLog(); }
+}));
+
+async function tick() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    last = await r.json();
+    setTop(last);
+    if (tab === "now") renderNow();
+  } catch (e) { setTop(null, "PC에 연결할 수 없음"); }
+  if (tab !== "now" && ++ticks % 5 === 0) loadLog();   // 이력 탭은 15초마다 갱신
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body></html>
+"""
