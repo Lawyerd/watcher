@@ -1,7 +1,7 @@
 # CNC Watcher
 
 FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실시간 모니터링하는 Windows 데스크톱 앱.
-현재 버전 **v2.3** (2026-08-03 배포). Python + customtkinter, PyInstaller로 exe 배포.
+현재 버전 **v2.4** (2026-10-21 빌드). Python + customtkinter, PyInstaller로 exe 배포.
 
 ## 파일 구조
 
@@ -35,12 +35,12 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 ## 빌드 & 배포
 
 ```bash
-pyinstaller CNC_Watcher_v2.3.spec --noconfirm && cp -r dll icons fonts dist/CNC_Watcher_v2.3/ && cp machines.json dist/CNC_Watcher_v2.3/
+pyinstaller CNC_Watcher_v2.4.spec --noconfirm && cp -r dll icons fonts dist/CNC_Watcher_v2.4/ && cp machines.json dist/CNC_Watcher_v2.4/
 ```
 
 - **재빌드하면 dist 폴더가 초기화되므로 dll/icons/fonts/machines.json 복사를 매번 다시 해야 한다.**
 - 빌드 전 실행 중인 exe를 종료할 것 (dll 잠김으로 빌드 실패).
-- `dist\CNC_Watcher_v2.3\` 폴더 전체가 완전한 배포본 — 공장 PC에 폴더째 복사하면 끝.
+- `dist\CNC_Watcher_v2.4\` 폴더 전체가 완전한 배포본 — 공장 PC에 폴더째 복사하면 끝.
 - `*.spec`은 gitignore 대상(로컬 전용). 버전 올릴 때 spec 복사 후 name/icon 수정.
 - 창 제목 버전(`monitor_ui.py`의 `self.title(...)`)도 같이 올릴 것.
 
