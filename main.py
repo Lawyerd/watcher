@@ -1,26 +1,28 @@
+import io
 import os
 import sys
 import json
 import time
-import io
+import base64
 import ctypes
-import datetime
 import socket
 import logging
+import tempfile
 import threading
-from tkinter import messagebox
+import winsound
+from logging.handlers import RotatingFileHandler
 from PIL import Image, ImageDraw
 import pystray
-from fanuc_logic import FanucMachine
-from monitor_ui import AppUI, SettingsDialog, RemoteDialog, state_of, summary_of
-from notifier import StatusNotifier
-from utilization import UtilizationTracker
-from remote_server import RemoteServer, RemoteAuth, local_urls, funnel_url
+import webview
 
-from logging.handlers import RotatingFileHandler
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                    handlers=[logging.StreamHandler(),
-                              RotatingFileHandler("cnc_watcher.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")])
+VERSION = "v3.0"
+# 자가 테스트: 실행 중인 앱과 함께 돌 수 있게 중복 실행 검사 생략, 이력은 임시 폴더, 토스트 끔
+SELFTEST = "--selftest" in sys.argv
+
+_handlers = [RotatingFileHandler("cnc_watcher.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")]
+if sys.stderr:   # exe(--windowed)에서는 stderr가 없다
+    _handlers.append(logging.StreamHandler())
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=_handlers)
 logger = logging.getLogger(__name__)
 
 _lock_socket = None
@@ -35,8 +37,10 @@ def is_already_running():
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
+    WEB_DIR  = os.path.join(sys._MEIPASS, "web")      # [v3.0] 화면 파일은 exe 안에 묶음
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    WEB_DIR  = os.path.join(BASE_DIR, "web")
 
 DLL_DIR      = os.path.join(BASE_DIR, "dll")
 CONFIG_FILE  = os.path.join(BASE_DIR, "machines.json")
@@ -47,21 +51,26 @@ ICON_PATH    = os.path.join(ICONS_DIR, "watcher_icon.ico")
 ICON_PNG     = os.path.join(ICONS_DIR, "watcher_icon.png")   # 토스트 알림용 (winotify는 png 필요)
 FONTS_DIR    = os.path.join(BASE_DIR, "fonts")
 
-def load_private_fonts():
-    """[v2.3] fonts/ 폴더의 폰트를 이 프로세스 전용으로 로드.
-    시스템 설치 없이 앱 안에서만 사용 가능 (JetBrains Mono 동봉 배포용)."""
-    if not os.path.isdir(FONTS_DIR): return
-    FR_PRIVATE = 0x10
-    for f in os.listdir(FONTS_DIR):
-        if f.lower().endswith((".ttf", ".otf")):
-            try:
-                ctypes.windll.gdi32.AddFontResourceExW(os.path.join(FONTS_DIR, f), FR_PRIVATE, None)
-            except Exception as e:
-                logger.error(f"폰트 로드 실패 ({f}): {e}")
-
 if os.path.exists(DLL_DIR):
     if hasattr(os, 'add_dll_directory'): os.add_dll_directory(DLL_DIR)
     os.environ['PATH'] = DLL_DIR + os.pathsep + os.environ['PATH']
+
+# DLL 경로 설정 뒤에 import (fanuc_logic이 Fwlib을 찾을 수 있도록)
+from notifier import StatusNotifier                                          # noqa: E402
+from utilization import UtilizationTracker                                   # noqa: E402
+from remote_server import RemoteServer, RemoteAuth, PIN_LEN, local_urls, funnel_url   # noqa: E402
+from poller import Poller                                                    # noqa: E402
+
+WIDTH, COMPACT_WIDTH = 640, 240
+_user32 = ctypes.WinDLL("user32")
+_user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_ASYNCWINDOWPOS = 0x1, 0x2, 0x10, 0x4000
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
 
 def draw_watcher_icon(px=512):
     """[v2.3] 펄스 라인 아이콘: 다크 라운드 사각형 + 초록 심박 라인 (512px 렌더 후 축소)"""
@@ -78,318 +87,284 @@ def draw_watcher_icon(px=512):
         d.ellipse((p[0] - r, p[1] - r, p[0] + r, p[1] + r), fill="#30D158")
     return img
 
-def load_config():
+
+def ensure_icons():
+    os.makedirs(ICONS_DIR, exist_ok=True)
     try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return [FanucMachine(m['name'], m['ip'], port=m.get('port', 8193), dll_path=DLL_PATH) for m in data]
+        if not os.path.exists(ICON_PATH):
+            draw_watcher_icon().save(ICON_PATH, format='ICO', sizes=[(256, 256), (64, 64), (48, 48), (32, 32), (16, 16)])
+        if not os.path.exists(ICON_PNG):   # 토스트용 고해상도 PNG (256px)
+            draw_watcher_icon().resize((256, 256), Image.LANCZOS).save(ICON_PNG, format='PNG')
+    except Exception as e:
+        logger.error(f"아이콘 생성 실패: {e}")
+
+
+def web_icons():
+    """휴대폰 홈 화면 아이콘용 PNG (192/512px)"""
+    icons, img = {}, draw_watcher_icon()
+    for px in (192, 512):
+        buf = io.BytesIO()
+        img.resize((px, px), Image.LANCZOS).save(buf, format="PNG")
+        icons[px] = buf.getvalue()
+    return icons
+
+
+def load_configs():
+    try:
+        with open(CONFIG_FILE, encoding='utf-8') as f:
+            return json.load(f)
     except Exception as e:
         logger.error(f"설정 로드 실패: {e}")
         return []
 
-class MainController:
-    def __init__(self):
-        self._check_create_icon()
-        self.machines = load_config()
-        
-        # [v2.0 수정] 로그 폴더 생성을 위해 BASE_DIR 함께 전달
-        self.notifier = StatusNotifier(icon_path=ICON_PNG, base_dir=BASE_DIR)
-        self.util     = UtilizationTracker(self.notifier.log_dir)   # [v2.4] 오늘 가동률
-        self.app      = AppUI(self.machines)
 
-        if os.path.exists(ICON_PATH):
-            try:
-                self.app.iconbitmap(ICON_PATH)
-                self.app.icon_path = ICON_PATH   # 설정 창/알람 팝업 등 자식 창에서도 사용
-            except Exception as e: logger.error(f"아이콘 적용 실패: {e}")
-
-        self._bind_conn_buttons()
-        self.app.settings_btn.configure(command=self.open_settings)
-
-        # [v2.4] 원격 모니터링 (휴대폰 등에서 상태 확인용 읽기 전용 서버)
-        self.remote_auth = RemoteAuth(REMOTE_FILE)
-        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=self._web_icons(), auth=self.remote_auth)
-        self.app.remote_btn.configure(command=self.toggle_remote)
-        self.app.remote_btn.bind("<Button-3>", lambda e: self.open_remote_dialog())
-        self.app.detail_cb = self._fill_detail
-
-        self.setup_tray()
-        self.update_loop()
-
-    def _web_icons(self):
-        """휴대폰 홈 화면 아이콘용 PNG (192/512px)"""
-        icons = {}
-        img = draw_watcher_icon()
-        for px in (192, 512):
-            buf = io.BytesIO()
-            img.resize((px, px), Image.LANCZOS).save(buf, format="PNG")
-            icons[px] = buf.getvalue()
-        return icons
-
-    def _bind_conn_buttons(self):
-        for m in self.machines:
-            if m.ip in self.app.widgets:
-                self.app.widgets[m.ip]["btn"].configure(command=lambda target=m: self.toggle_conn(target))
-
-    def open_settings(self):
-        data = [{"name": m.name, "ip": m.ip, "port": m.port} for m in self.machines]
-        SettingsDialog(self.app, data, self.apply_machine_config)
-
-    def apply_machine_config(self, new_data):
-        """설정 창에서 저장 시 호출: machines.json 갱신 후 재시작 없이 즉시 반영"""
+def build_html():
+    """PC 화면 HTML. 동봉 폰트(JetBrains Mono)를 base64로 넣는다 — 웹 화면 엔진은 별도 프로세스라
+    파이썬 프로세스에 등록한 폰트(AddFontResourceEx)를 못 쓰고, html 문자열로 띄우므로 파일 경로도 못 쓴다."""
+    with open(os.path.join(WEB_DIR, "desktop.html"), encoding="utf-8") as f:
+        html = f.read()
+    faces = []
+    for name, weight in (("JetBrainsMono-Regular.ttf", 400), ("JetBrainsMono-Bold.ttf", 700)):
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(new_data, f, ensure_ascii=False, indent=4)
-        except Exception as e:
+            with open(os.path.join(FONTS_DIR, name), "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+            faces.append(f'@font-face {{ font-family: "JetBrains Mono"; font-weight: {weight}; '
+                         f'src: url(data:font/ttf;base64,{data}) format("truetype"); }}')
+        except OSError:
+            pass   # 폰트가 없으면 CSS의 대체 글꼴(Cascadia Mono → Consolas) 사용
+    return html.replace("/*@FONTS@*/", "\n".join(faces)).replace("@VERSION@", VERSION)
+
+
+def validate_machines(rows):
+    """설정 창 입력 검증. 문제 있으면 오류 문구, 정상이면 정리된 목록"""
+    out, seen = [], set()
+    for r in rows:
+        name, ip, port = str(r.get("name", "")).strip(), str(r.get("ip", "")).strip(), str(r.get("port", "")).strip()
+        if not name or not ip:
+            return "장비명과 IP 주소를 모두 입력해 주세요."
+        if not port.isdigit() or not 1 <= int(port) <= 65535:
+            return f"[{name}] 포트는 1~65535 사이의 숫자여야 합니다."
+        if ip in seen:
+            return f"IP 주소가 중복되었습니다: {ip}"
+        seen.add(ip)
+        out.append({"name": name, "ip": ip, "port": int(port)})
+    return out if out else "최소 1대 이상의 장비가 필요합니다."
+
+
+class Api:
+    """[v3.0] PC 화면(JS) → 파이썬 호출 창구 (pywebview js_api).
+    HTTP가 아니라 창 내부 연결이라 Funnel로 공개되는 원격 서버와 완전히 분리된다 — 연결·설정 같은
+    제어 기능은 절대 웹 서버로 열지 말 것. 각 호출은 별도 스레드에서 실행되므로 FOCAS는 직접 부르지 않고
+    poller에 명령만 넣는다. (밑줄로 시작하는 속성은 pywebview가 화면 쪽에 내보내지 않는다)"""
+
+    def __init__(self, app):
+        self._app = app
+
+    # ── 상태 ─────────────────────────────────────────────
+    def init(self):
+        a = self._app
+        return {"version": VERSION, "notify": a.poller.notify_enabled, "pin_len": PIN_LEN, "selftest": SELFTEST}
+
+    def status(self):
+        return dict(self._app.poller.snapshot(), events=self._app.poller.pop_events())
+
+    def connect(self, ip):
+        self._app.poller.request("connect", ip)
+
+    def disconnect(self, ip):
+        self._app.poller.request("disconnect", ip)
+
+    def set_notify(self, on):
+        self._app.poller.notify_enabled = bool(on)   # 토스트만 끈다 (CSV 이력은 항상 기록)
+        return self._app.poller.notify_enabled
+
+    # ── 원격 모니터링 ─────────────────────────────────────
+    def remote_toggle(self):
+        a = self._app
+        if a.remote.running:
+            a.poller.request("remote_stop")
+            return {"running": False}
+        if not a.auth.has_pin:
+            return {"need_pin": True}   # PIN 없이 인터넷에 공개되지 않도록 PIN부터
+        a.poller.request("remote_start")
+        return {"running": True}
+
+    def remote_info(self):
+        a = self._app
+        return {"has_pin": a.auth.has_pin, "running": a.remote.running, "funnel": funnel_url(),
+                "urls": local_urls(a.remote.port)}
+
+    def remote_save(self, pin):
+        a, pin = self._app, str(pin or "").strip()
+        if pin:
+            if len(pin) != PIN_LEN or not pin.isdigit():
+                return {"error": f"PIN은 숫자 {PIN_LEN}자리예요"}
+            a.auth.set_pin(pin)   # 기존 로그인 기기는 전부 로그아웃됨
+            logger.info("원격 모니터링 PIN 변경")
+        elif not a.auth.has_pin:
+            return {"error": "PIN을 정해주세요"}
+        if not a.remote.running:
+            a.poller.request("remote_start")
+        return {"ok": True}
+
+    def remote_logout_all(self):
+        self._app.auth.logout_all()
+        return {"ok": True}
+
+    # ── 장비 설정 ─────────────────────────────────────────
+    def get_machines(self):
+        return [{"name": m.name, "ip": m.ip, "port": m.port} for m in self._app.poller.machines]
+
+    def save_machines(self, rows):
+        result = validate_machines(rows or [])
+        if isinstance(result, str):
+            return {"error": result}
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=4)
+        except OSError as e:
             logger.error(f"설정 저장 실패: {e}")
-            messagebox.showerror("저장 실패", f"machines.json 저장 중 오류가 발생했습니다.\n{e}")
+            return {"error": f"machines.json 저장 중 오류가 발생했습니다.\n{e}"}
+        self._app.poller.request("set_machines", result)
+        return {"ok": True}
+
+    # ── 창 ───────────────────────────────────────────────
+    def minimize(self):
+        self._app.window.minimize()
+
+    def hide(self):
+        self._app.window.hide()   # 닫기(✕) = 트레이로 숨김, 감시는 계속
+
+    def fit(self, height):
+        """내용 높이에 맞춰 창 높이 조절 (펼칠 땐 애니메이션 전에, 접을 땐 끝난 뒤에 화면이 호출)"""
+        a = self._app
+        a.window.resize(COMPACT_WIDTH if a.compact else WIDTH, max(60, min(900, int(height))))
+
+    def set_compact(self, on, height):
+        """최소화(슬림) 모드: 좁은 폭 + 항상 위"""
+        a = self._app
+        a.compact = bool(on)
+        a.set_topmost(a.compact)
+        self.fit(height)
+
+    def compact_drag(self):
+        """최소화 모드 카드 끌기: 마우스 버튼을 놓을 때까지 창을 따라 움직인다.
+        움직인 거리를 돌려주며, 거의 안 움직였으면 화면이 '클릭(원래 크기로)'으로 처리한다."""
+        w, start, cur = self._app.window, _POINT(), _POINT()
+        _user32.GetCursorPos(ctypes.byref(start))
+        wx, wy, moved = w.x, w.y, 0
+        while _user32.GetAsyncKeyState(0x01) & 0x8000:   # VK_LBUTTON
+            _user32.GetCursorPos(ctypes.byref(cur))
+            dx, dy = cur.x - start.x, cur.y - start.y
+            if moved or abs(dx) > 3 or abs(dy) > 3:
+                moved = max(moved, abs(dx) + abs(dy))
+                w.move(wx + dx, wy + dy)
+            time.sleep(0.015)
+        return moved
+
+    def attention(self):
+        """알람: 숨겨져 있어도 창을 앞으로 띄우고 경고음"""
+        a = self._app
+        a.window.show()
+        a.window.restore()
+        if not a.compact:
+            a.set_topmost(True)
+            threading.Timer(1.5, lambda: a.set_topmost(a.compact)).start()
+        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+
+    def report(self, text):
+        """자가 테스트 결과 기록 (screenshot:이름 → 창 캡처를 임시 폴더에 저장)"""
+        a = self._app
+        if text.startswith("test:"):   # 창 동작 점검: 숨기기 / 트레이 '열기' / Alt+F4(WM_CLOSE) / 보이는지 기록
+            act = text[5:]
+            if act == "hide":
+                self.hide()
+            elif act == "show":
+                a.show_window()
+            elif act == "wmclose":
+                _user32.PostMessageW(ctypes.c_void_p(a.hwnd), 0x0010, 0, 0)
+            logger.info(f"[자가 테스트] {act} → 창 보임={bool(_user32.IsWindowVisible(ctypes.c_void_p(a.hwnd)))}")
             return
+        if text.startswith("screenshot:"):
+            from PIL import ImageGrab
+            w, path = a.window, os.path.join(a.data_dir, f"selftest_{text.split(':', 1)[1]}.png")
+            ImageGrab.grab((w.x, w.y, w.x + w.width, w.y + w.height), all_screens=True).save(path)
+            logger.info(f"[자가 테스트] 캡처 {path}")
+            return
+        logger.info(f"[자가 테스트] {text}")
+        if text.startswith("selftest done"):
+            threading.Timer(0.5, a.quit).start()
 
-        # IP/포트가 같은 장비는 기존 객체를 재사용해 연결 상태 유지
-        old_by_key = {(m.ip, m.port): m for m in self.machines}
-        new_machines = []
-        for entry in new_data:
-            key = (entry["ip"], entry["port"])
-            if key in old_by_key:
-                m = old_by_key.pop(key)
-                m.name = entry["name"]
-            else:
-                m = FanucMachine(entry["name"], entry["ip"], port=entry["port"], dll_path=DLL_PATH)
-            new_machines.append(m)
 
-        # 목록에서 빠진 장비는 연결 해제
-        for m in old_by_key.values():
-            m.want_connected = False
-            if m.is_connected: m.disconnect()
+class App:
+    def __init__(self):
+        ensure_icons()
+        self.data_dir = tempfile.mkdtemp(prefix="cncw_selftest_") if SELFTEST else BASE_DIR
+        self.notifier = StatusNotifier(icon_path=ICON_PNG, base_dir=self.data_dir)
+        self.util = UtilizationTracker(self.notifier.log_dir)
+        self.auth = RemoteAuth(None if SELFTEST else REMOTE_FILE)
+        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=web_icons(), auth=self.auth)
+        self.poller = Poller(load_configs(), DLL_PATH, self.notifier, self.util, self.remote)
+        self.poller.notify_enabled = not SELFTEST
+        self.compact = False
+        self.quitting = False
+        self.hwnd = None   # 창이 뜬 뒤(_on_shown) 채움
+        self.api = Api(self)
+        self.window = webview.create_window(
+            f"DN Solutions Machine Watcher {VERSION}", html=build_html(), js_api=self.api,
+            width=WIDTH, height=322, frameless=True, easy_drag=False, background_color="#131316", min_size=(200, 60))
+        self.window.events.shown += self._on_shown
+        self.window.events.closing += self._on_closing
 
-        self.machines = new_machines
-        self.app.machines = new_machines
-        self.app.build_machine_cards()
-        self._bind_conn_buttons()
-        logger.info(f"장비 설정 변경 적용: {[m.name for m in new_machines]}")
+    def set_topmost(self, on):
+        """항상 위 켜기/끄기. pywebview의 window.on_top은 다른 스레드에서 .NET 속성을 GIL을 쥔 채 바꿔
+        화면 스레드와 서로 기다리는(데드락) 문제가 있어 Win32 SetWindowPos(비동기)로 직접 한다."""
+        if self.hwnd:
+            _user32.SetWindowPos(self.hwnd, HWND_TOPMOST if on else HWND_NOTOPMOST, 0, 0, 0, 0,
+                                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
 
-    def _check_create_icon(self):
-        if not os.path.exists(ICON_PATH):
-            try:
-                os.makedirs(ICONS_DIR, exist_ok=True)
-                draw_watcher_icon().save(ICON_PATH, format='ICO',
-                                         sizes=[(256, 256), (64, 64), (48, 48), (32, 32), (16, 16)])
-            except Exception as e: logger.error(f"아이콘 생성 실패: {e}")
-        # 토스트용 고해상도 PNG (256px)
-        if not os.path.exists(ICON_PNG):
-            try:
-                os.makedirs(ICONS_DIR, exist_ok=True)
-                draw_watcher_icon().resize((256, 256), Image.LANCZOS).save(ICON_PNG, format='PNG')
-            except Exception as e: logger.error(f"PNG 아이콘 생성 실패: {e}")
+    def _on_shown(self):
+        try:   # 윈도우 11 둥근 모서리 (윈도우 10에서는 무시됨)
+            self.hwnd = hwnd = self.window.native.Handle.ToInt64()
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), 33, ctypes.byref(ctypes.c_int(2)), 4)
+        except Exception as e:
+            logger.warning(f"둥근 모서리 적용 실패: {e}")
+
+    def _on_closing(self):
+        if not self.quitting:   # Alt+F4 등으로 닫아도 종료하지 않고 트레이로
+            self.window.hide()
+            return False
 
     def setup_tray(self):
-        if os.path.exists(ICON_PATH):
-            try: img = Image.open(ICON_PATH)
-            except Exception:
-                img = Image.new('RGB', (64, 64), color=(31, 106, 165))
-                ImageDraw.Draw(img).rectangle([16, 16, 48, 48], fill=(255, 255, 255))
-        else:
-            img = Image.new('RGB', (64, 64), color=(31, 106, 165))
-            ImageDraw.Draw(img).rectangle([16, 16, 48, 48], fill=(255, 255, 255))
-        
-        def safe_show(icon, item): self.app.after(0, self.app.show_window)
-        def safe_quit(icon, item): self.app.after(0, self.quit_all)
-
-        menu = (pystray.MenuItem('열기', safe_show, default=True), pystray.MenuItem('종료', safe_quit))
-        self.tray_icon = pystray.Icon("CNC Watcher", img, "CNC Watcher", menu)
-        threading.Thread(target=self.tray_icon.run, daemon=True).start()
-
-    def quit_all(self):
-        self.remote.stop()
-        self.tray_icon.stop()
-        self.util.close([m.name for m in self.machines])
-        for m in self.machines: m.disconnect()
-        self.app.quit()
-
-    def toggle_remote(self):
-        if self.remote.running:
-            self.remote.stop()
-            self.app.set_remote_state(False)
-        elif not self.remote_auth.has_pin:
-            self.open_remote_dialog()   # PIN 없이 공개되지 않도록 처음엔 PIN부터 정함
-        else:
-            self.start_remote()
-
-    def start_remote(self):
         try:
-            self.remote.start()
-        except OSError as e:
-            logger.error(f"원격 모니터링 시작 실패: {e}")
-            messagebox.showerror("원격 모니터링", f"서버를 시작할 수 없습니다 (포트 {self.remote.port}).\n{e}")
-            return
-        self.publish_snapshot()
-        urls = local_urls(self.remote.port)
-        self.app.set_remote_state(True, urls)
-        # Funnel 주소는 tailscale 명령으로 확인 (최대 3초) → 백그라운드에서 조회 후 툴팁에 추가
-        def _lookup():
-            url = funnel_url()
-            if url:
-                self.app.after(0, lambda: self.remote.running and self.app.set_remote_state(True, [url] + urls))
-        threading.Thread(target=_lookup, daemon=True).start()
+            img = Image.open(ICON_PATH)
+        except Exception:
+            img = draw_watcher_icon(64)
 
-    def open_remote_dialog(self):
-        dlg = RemoteDialog(self.app, self.remote_auth.has_pin, self.remote.running,
-                           self.save_remote_settings, self.remote_auth.logout_all)
-        def _lookup():
-            url = funnel_url()
-            self.app.after(0, lambda: dlg.winfo_exists() and dlg.set_url(url))
-        threading.Thread(target=_lookup, daemon=True).start()
+        menu = (pystray.MenuItem('열기', lambda icon, item: self.show_window(), default=True), pystray.MenuItem('종료', lambda icon, item: self.quit()))
+        self.tray = pystray.Icon("CNC Watcher", img, "CNC Watcher", menu)
+        threading.Thread(target=self.tray.run, daemon=True).start()
 
-    def save_remote_settings(self, pin):
-        if pin:
-            self.remote_auth.set_pin(pin)   # 기존 로그인 기기는 전부 로그아웃됨
-            logger.info("원격 모니터링 PIN 변경")
-        if not self.remote.running:
-            self.start_remote()
+    def show_window(self):
+        self.window.show()
+        self.window.restore()
 
-    def _fill_detail(self, ip):
-        """카드를 처음 펼칠 때 다음 폴링을 기다리지 않고 부하·가동률을 바로 채움"""
-        m = next((m for m in self.machines if m.ip == ip), None)
-        if m:
-            self.app.apply_detail(ip, m.data, self.util.summary(m.name), m.is_connected)
+    def quit(self):
+        self.quitting = True
+        self.window.destroy()
 
-    def _track_state(self, m):
-        """[v2.4] 상태(RUN/ALARM/…)가 바뀐 시각 기록 → 휴대폰 페이지의 'N분째' 표시용"""
-        st = state_of(m.data["status"], m.data["is_alarm"], m.is_connected)
-        if getattr(m, "_state", None) != st:
-            m._state, m._state_since = st, datetime.datetime.now()
-        self.util.update(m.name, st)
+    def run(self):
+        self.poller.start()
+        self.setup_tray()
+        webview.start(private_mode=True)
+        # 창이 닫히면 장비 스레드가 핸들을 정리하고(원격 서버 종료·가동률 마감 포함) 끝날 때까지 잠깐 기다림
+        self.poller.request("shutdown")
+        self.poller.join(timeout=5)
+        self.tray.stop()
 
-    def publish_snapshot(self):
-        """원격 서버로 넘길 상태 스냅샷 (메인 스레드에서 생성 → 서버 스레드는 FOCAS 접근 안 함)"""
-        now = datetime.datetime.now()
-        counts = self.notifier.today_counts()
-        machines = []
-        for m in self.machines:
-            d = m.data
-            since = getattr(m, "_state_since", now)
-            machines.append({
-                "name": m.name, "connected": m.is_connected,
-                "state": state_of(d["status"], d["is_alarm"], m.is_connected),
-                "status": d["status"], "mode": d["mode"], "tool": d["tool"],
-                "next_tool": d["next_tool"], "cycle_time": d["cycle_time"],
-                "alarms": d["alarms"],
-                "state_since": since.strftime("%H:%M:%S"),
-                "state_sec": int((now - since).total_seconds()),
-                "done_today": counts.get(m.name, 0),
-                "spindle_load": d["spindle_load"], "spindle_rpm": d["spindle_rpm"],
-                "axis_loads": d["axis_loads"], "program": d["program"],
-                "util": self.util.summary(m.name),
-            })
-        col, txt, _ = summary_of(self.machines)
-        self.remote.update_snapshot({
-            "updated": now.strftime("%H:%M:%S"),
-            "summary": {"color": col, "text": txt, "total": len(self.machines)},
-            "machines": machines,
-        })
-
-    def toggle_conn(self, m):
-        if not m.is_connected:
-            if m.connect():
-                m.want_connected = True
-            else:
-                messagebox.showwarning("실패", f"[{m.name}] 연결 불가")
-        else:
-            m.want_connected = False
-            m.disconnect()
-            # [v2.0 수정] 빈 사이클 타임 전달
-            self.notifier.check_and_notify(m.name, "OFFLINE", "00:00:00", False, self.app.notify_enabled.get())
-
-    def update_loop(self):
-        # [v2.4] 카드 펼침/접힘 애니메이션 중에는 폴링(장비당 ~17ms FOCAS + 화면 갱신)을 잠깐 미룬다
-        #        — 메인 스레드가 막히면 애니메이션이 뚝뚝 끊기고 잔상이 남음 (최대 0.25초 지연)
-        if self.app.animating:
-            self.app.after(50, self.update_loop)
-            return
-        for m in self.machines:
-            if m.is_connected:
-                try: m.fetch_data()
-                except OSError: m.drop_connection()
-                except Exception as e: logger.error(f"fetch_data 예외: {e}", exc_info=True)
-
-                if m.is_connected:
-                    st  = m.data["status"]
-                    cyc = m.data["cycle_time"]
-
-                    alarms = m.data["alarms"]
-
-                    notif_res = self.notifier.check_and_notify(
-                        m.name, st, cyc, m.data["is_alarm"], self.app.notify_enabled.get(), alarms
-                    )
-
-                    if notif_res == "ALARM_POPUP": self.app.show_emergency_popup(m.name, alarms)
-
-                    if not self.app.is_hidden:
-                        # [v2.3] 상태 반영은 AppUI.apply_status가 일괄 처리
-                        self.app.apply_status(m.ip, m.data["mode"], st, m.data["tool"],
-                                              cyc, m.data["is_alarm"], True, alarms, m.data["program"])
-            else:
-                # [v2.2 추가] 절전 복귀 등으로 끊긴 경우 자동 재연결
-                if m.want_connected:
-                    self.try_reconnect(m)
-
-                if not self.app.is_hidden:
-                    self.app.apply_status(m.ip, "-", "OFFLINE", "-", "-", False, False)
-
-            self._track_state(m)
-            # [v2.4] 카드가 펼쳐진 장비만 부하·가동률 패널 갱신, 접힌 장비는 패널만 미리 만들어 둠
-            if not self.app.is_hidden:
-                if m.ip in self.app.expanded:
-                    self.app.apply_detail(m.ip, m.data, self.util.summary(m.name), m.is_connected)
-                else:
-                    self.app.prepare_detail(m.ip, m.data["axis_loads"])
-
-        if not self.app.is_hidden:
-            self.app.update_summary()
-
-        if self.remote.running:
-            self.publish_snapshot()
-
-        self.app.after(3000 if self.app.is_hidden else 500, self.update_loop)
-
-    def try_reconnect(self, m):
-        """자동 재연결 (10초 간격 제한).
-        FOCAS 핸들은 그 핸들을 만든 스레드에서만 유효하므로(다른 스레드에서 쓰면 EW_HANDLE -8),
-        백그라운드 스레드는 TCP 도달성 확인만 하고 실제 연결은 메인 스레드에서 수행한다."""
-        if getattr(m, "_reconnecting", False):
-            return
-        now = time.monotonic()
-        if now - getattr(m, "_last_reconnect_try", 0.0) < 10:
-            return
-        m._last_reconnect_try = now
-        m._reconnecting = True
-
-        def _probe():
-            try:
-                s = socket.create_connection((m.ip, m.port), timeout=2)
-                s.close()
-            except OSError:
-                m._reconnecting = False
-                logger.warning(f"[{m.name}] 재연결 대기: 장비 응답 없음 (10초 후 재시도)")
-                return
-            # 도달 가능 확인됨 → 실제 FOCAS 연결은 메인 스레드에서
-            self.app.after(0, lambda: self._finish_reconnect(m))
-
-        threading.Thread(target=_probe, daemon=True).start()
-
-    def _finish_reconnect(self, m):
-        try:
-            if not m.is_connected and m.want_connected:
-                if m.connect():
-                    logger.info(f"[{m.name}] 자동 재연결 성공")
-                else:
-                    logger.warning(f"[{m.name}] 자동 재연결 실패 (10초 후 재시도)")
-        finally:
-            m._reconnecting = False
 
 if __name__ == "__main__":
-    if is_already_running():
-        import tkinter as tk
-        r = tk.Tk(); r.withdraw(); messagebox.showwarning("알림", "이미 실행 중입니다."); r.destroy(); sys.exit(0)
-    load_private_fonts()   # AppUI의 폰트 탐색보다 먼저 로드해야 함
-    MainController().app.mainloop()
+    if not SELFTEST and is_already_running():
+        ctypes.windll.user32.MessageBoxW(None, "이미 실행 중입니다.", "CNC Watcher", 0x40)
+        sys.exit(0)
+    App().run()

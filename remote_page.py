@@ -1,5 +1,5 @@
 # [v2.4] 휴대폰용 원격 모니터링 페이지 (B안: 요약 타일 + 현황/가공 이력/알람 이력 탭)
-# remote_server.py가 그대로 응답한다. 색은 monitor_ui.py의 다크 팔레트와 맞춤.
+# remote_server.py가 그대로 응답한다. 색은 web/desktop.html(PC 화면)의 다크 팔레트와 맞춤.
 
 MANIFEST = """{
   "name": "CNC Watcher",
