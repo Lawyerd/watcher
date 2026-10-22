@@ -18,8 +18,15 @@ import webview
 VERSION = "v3.0"
 # 자가 테스트: 실행 중인 앱과 함께 돌 수 있게 중복 실행 검사 생략, 이력은 임시 폴더, 토스트 끔
 SELFTEST = "--selftest" in sys.argv
+START_IN_TRAY = "--tray" in sys.argv   # 윈도우 자동 실행 시 '트레이로 숨겨서 시작' (startup.py가 붙임)
 
-_handlers = [RotatingFileHandler("cnc_watcher.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")]
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 로그도 exe 옆에 — 자동 실행 때는 작업 폴더가 system32라 상대 경로를 쓰면 엉뚱한 곳에 생긴다
+_handlers = [RotatingFileHandler(os.path.join(BASE_DIR, "cnc_watcher.log"), maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")]
 if sys.stderr:   # exe(--windowed)에서는 stderr가 없다
     _handlers.append(logging.StreamHandler())
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=_handlers)
@@ -35,16 +42,10 @@ def is_already_running():
     except socket.error:
         return True
 
-if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
-    WEB_DIR  = os.path.join(sys._MEIPASS, "web")      # [v3.0] 화면 파일은 exe 안에 묶음
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    WEB_DIR  = os.path.join(BASE_DIR, "web")
-
 DLL_DIR      = os.path.join(BASE_DIR, "dll")
 CONFIG_FILE  = os.path.join(BASE_DIR, "machines.json")
 REMOTE_FILE  = os.path.join(BASE_DIR, "remote.json")    # [v2.4] 원격 PIN 해시·로그인 서명 키
+CONN_FILE    = "connections.json"                       # [v3.0] 꺼질 때 연결돼 있던 장비 (다음 실행 때 복원)
 DLL_PATH     = os.path.join(DLL_DIR, "Fwlib64.dll")
 ICONS_DIR    = os.path.join(BASE_DIR, "icons")
 ICON_PATH    = os.path.join(ICONS_DIR, "watcher_icon.ico")
@@ -60,6 +61,8 @@ from notifier import StatusNotifier                                          # n
 from utilization import UtilizationTracker                                   # noqa: E402
 from remote_server import RemoteServer, RemoteAuth, PIN_LEN, local_urls, funnel_url   # noqa: E402
 from poller import Poller                                                    # noqa: E402
+import webui                                                                 # noqa: E402
+import startup                                                               # noqa: E402
 
 WIDTH, COMPACT_WIDTH = 640, 240
 _user32 = ctypes.WinDLL("user32")
@@ -121,8 +124,6 @@ def load_configs():
 def build_html():
     """PC 화면 HTML. 동봉 폰트(JetBrains Mono)를 base64로 넣는다 — 웹 화면 엔진은 별도 프로세스라
     파이썬 프로세스에 등록한 폰트(AddFontResourceEx)를 못 쓰고, html 문자열로 띄우므로 파일 경로도 못 쓴다."""
-    with open(os.path.join(WEB_DIR, "desktop.html"), encoding="utf-8") as f:
-        html = f.read()
     faces = []
     for name, weight in (("JetBrainsMono-Regular.ttf", 400), ("JetBrainsMono-Bold.ttf", 700)):
         try:
@@ -132,7 +133,7 @@ def build_html():
                          f'src: url(data:font/ttf;base64,{data}) format("truetype"); }}')
         except OSError:
             pass   # 폰트가 없으면 CSS의 대체 글꼴(Cascadia Mono → Consolas) 사용
-    return html.replace("/*@FONTS@*/", "\n".join(faces)).replace("@VERSION@", VERSION)
+    return webui.page("desktop.html", FONTS="\n".join(faces))
 
 
 def validate_machines(rows):
@@ -211,14 +212,23 @@ class Api:
         self._app.auth.logout_all()
         return {"ok": True}
 
-    # ── 장비 설정 ─────────────────────────────────────────
-    def get_machines(self):
-        return [{"name": m.name, "ip": m.ip, "port": m.port} for m in self._app.poller.machines]
+    # ── 설정 창 (장비 목록 + 일반) ─────────────────────────
+    def get_settings(self):
+        on, tray, _ = startup.read()
+        return {"machines": [{"name": m.name, "ip": m.ip, "port": m.port} for m in self._app.poller.machines],
+                "autostart": on, "tray": tray, "can_autostart": startup.available()}
 
-    def save_machines(self, rows):
-        result = validate_machines(rows or [])
+    def save_settings(self, data):
+        data = data or {}
+        result = validate_machines(data.get("machines") or [])
         if isinstance(result, str):
             return {"error": result}
+        if startup.available() and not SELFTEST:
+            try:
+                startup.write(bool(data.get("autostart")), bool(data.get("tray", True)))
+            except OSError as e:
+                logger.error(f"자동 실행 설정 실패: {e}")
+                return {"error": f"자동 실행 설정 중 오류가 발생했습니다.\n{e}"}
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=4)
@@ -288,7 +298,10 @@ class Api:
         if text.startswith("screenshot:"):
             from PIL import ImageGrab
             w, path = a.window, os.path.join(a.data_dir, f"selftest_{text.split(':', 1)[1]}.png")
+            a.set_topmost(True)   # 다른 창에 가려져 있으면 그 창이 찍히므로 잠깐 맨 위로
+            time.sleep(0.2)
             ImageGrab.grab((w.x, w.y, w.x + w.width, w.y + w.height), all_screens=True).save(path)
+            a.set_topmost(a.compact)
             logger.info(f"[자가 테스트] 캡처 {path}")
             return
         logger.info(f"[자가 테스트] {text}")
@@ -304,15 +317,22 @@ class App:
         self.util = UtilizationTracker(self.notifier.log_dir)
         self.auth = RemoteAuth(None if SELFTEST else REMOTE_FILE)
         self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=web_icons(), auth=self.auth)
-        self.poller = Poller(load_configs(), DLL_PATH, self.notifier, self.util, self.remote)
+        self.poller = Poller(load_configs(), DLL_PATH, self.notifier, self.util, self.remote,
+                             state_path=os.path.join(self.data_dir, CONN_FILE))
         self.poller.notify_enabled = not SELFTEST
+        if not SELFTEST:
+            try:
+                startup.follow_current_exe()
+            except OSError as e:
+                logger.error(f"자동 실행 경로 갱신 실패: {e}")
         self.compact = False
         self.quitting = False
         self.hwnd = None   # 창이 뜬 뒤(_on_shown) 채움
         self.api = Api(self)
         self.window = webview.create_window(
             f"DN Solutions Machine Watcher {VERSION}", html=build_html(), js_api=self.api,
-            width=WIDTH, height=322, frameless=True, easy_drag=False, background_color="#131316", min_size=(200, 60))
+            width=WIDTH, height=322, frameless=True, easy_drag=False, background_color="#131316", min_size=(200, 60),
+            hidden=START_IN_TRAY)   # 숨겨서 시작해도 화면(JS)은 돌아서 알람 팝업·장비 읽기는 그대로
         self.window.events.shown += self._on_shown
         self.window.events.closing += self._on_closing
 

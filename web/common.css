@@ -1,0 +1,18 @@
+  /* ── 휴대폰·PC 공통 (webui.py가 두 화면의 COMMON_CSS 자리에 넣는다) ──
+     다크 팔레트 — 색 추가/변경은 여기서만. 상태 색(C)·부하 막대 색도 이 변수를 쓴다 (common.js) */
+  :root { --bg:#131316; --card:#1C1C21; --line:#2C2C33; --text:#F2F2F7; --val:#D1D1D6; --muted:#8E8E93; --sub:#636366;
+          --btn:#26262C; --btn-hov:#33333A; --outline:#3A3A42; --nav:#101013; --accent:#0A84FF; --accent-hov:#0B6FD6;
+          --green:#30D158; --green-bg:#0E2E1A; --red:#FF453A; --red-bg:#3A0E0C; --yellow:#FFD60A; --yellow-bg:#332B08;
+          --gray:#98989D; --off:#5A5A60; --off-bg:#222226;
+          --alm-code:#FF6961; --alm-msg:#F2C9C6; --alm-sub:#8E5A56; --alm-line:#3A1B18;
+          --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, Menlo, monospace;
+          --ui: -apple-system, "Malgun Gothic", "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+  button { font-family: inherit; }
+  .mono { font-family: var(--mono); }
+
+  /* 오늘 가동률 타임라인 (0시 → 지금, 가공 초록 · 알람 빨강) */
+  .tl { position: relative; height: 8px; border-radius: 3px; background: var(--btn); overflow: hidden; margin-top: 5px; }
+  .tl i { position: absolute; top: 0; bottom: 0; }
+  .tlx { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--sub); margin-top: 2px; }

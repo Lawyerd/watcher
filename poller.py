@@ -1,4 +1,5 @@
 import time
+import json
 import queue
 import logging
 import datetime
@@ -20,14 +21,14 @@ def state_of(status, is_alarm, connected):
 
 
 def summary_of(machines):
-    """헤더 가동 요약 (점 색, 문구). PC 화면과 휴대폰 페이지가 같은 문구를 쓴다."""
+    """PC 화면 헤더 가동 요약 (점 색으로 쓸 상태, 문구). 색 값은 화면 쪽(web/common.css)에서 정한다."""
     connected = [m for m in machines if m.is_connected]
     alarm = sum(1 for m in connected if m.data.get("is_alarm"))
     running = sum(1 for m in connected if "RUN" in m.data.get("status", ""))
-    if alarm:          return "#FF453A", f"알람 {alarm}대 발생"
-    if not connected:  return "#5A5A60", "연결된 장비 없음"
-    if running:        return "#30D158", f"{running}대 가동 중"
-    return "#98989D", f"{len(connected)}대 대기 중"
+    if alarm:          return "ALARM", f"알람 {alarm}대 발생"
+    if not connected:  return "OFFLINE", "연결된 장비 없음"
+    if running:        return "RUN", f"{running}대 가동 중"
+    return "IDLE", f"{len(connected)}대 대기 중"
 
 
 class Poller(threading.Thread):
@@ -39,19 +40,50 @@ class Poller(threading.Thread):
     원격 서버 켜기/끄기도 여기서 한다 — 절전 차단(SetThreadExecutionState)은 호출한 스레드가
     살아 있는 동안만 유지되는데, js_api 호출 스레드는 바로 끝나기 때문."""
 
-    def __init__(self, configs, dll_path, notifier, util, remote):
+    def __init__(self, configs, dll_path, notifier, util, remote, state_path=None):
         super().__init__(name="focas-poller", daemon=True)
         self.dll_path = dll_path
         self.notifier, self.util, self.remote = notifier, util, remote
         self.machines = [self._make(c) for c in configs]
+        # 상태 기억: 지난번 꺼질 때 연결돼 있던 장비는 자동 재연결 대상으로 두고 시작
+        # (바로 connect하지 않는 이유 — 부팅 직후 장비가 아직 꺼져 있어도 10초마다 다시 붙도록)
+        self.state_path = state_path
+        self._saved = self._load_state()
+        for m in self.machines:
+            m.want_connected = self._key(m) in self._saved
         self.notify_enabled = True
         self.cmds = queue.Queue()
         self._lock = threading.Lock()
-        self._snap = {"machines": [], "summary": {}, "remote": False}
+        self._snap = {"machines": [], "summary": {"state": "OFFLINE", "text": "불러오는 중…", "total": 0}, "remote": False}
         self._events = []
 
     def _make(self, c):
         return FanucMachine(c["name"], c["ip"], port=c.get("port", 8193), dll_path=self.dll_path)
+
+    @staticmethod
+    def _key(m):
+        return f"{m.ip}:{m.port}"
+
+    def _load_state(self):
+        if not self.state_path:
+            return []
+        try:
+            with open(self.state_path, encoding="utf-8") as f:
+                return sorted(json.load(f).get("connected", []))
+        except (OSError, ValueError, AttributeError, TypeError):
+            return []
+
+    def _save_state(self):
+        """연결을 원하는 장비 목록이 바뀌었을 때만 저장 (연결·해제·설정 변경 모두 여기서 잡힘)"""
+        want = sorted(self._key(m) for m in self.machines if m.want_connected)
+        if want == self._saved or not self.state_path:
+            return
+        self._saved = want
+        try:
+            with open(self.state_path, "w", encoding="utf-8") as f:
+                json.dump({"connected": want}, f, indent=4)
+        except OSError as e:
+            logger.error(f"연결 상태 저장 실패: {e}")
 
     # ── 화면 쪽에서 부르는 것 (스레드 안전) ──────────────────
     def request(self, action, arg=None):
@@ -170,8 +202,8 @@ class Poller(threading.Thread):
                 "state_since": since.strftime("%H:%M:%S"), "state_sec": int((now - since).total_seconds()),
                 "done_today": counts.get(m.name, 0), "util": self.util.summary(m.name),
             })
-        col, txt = summary_of(self.machines)
-        return {"updated": now.strftime("%H:%M:%S"), "summary": {"color": col, "text": txt, "total": len(machines)},
+        st, txt = summary_of(self.machines)
+        return {"updated": now.strftime("%H:%M:%S"), "summary": {"state": st, "text": txt, "total": len(machines)},
                 "machines": machines, "remote": self.remote.running, "notify": self.notify_enabled}
 
     def run(self):
@@ -179,8 +211,9 @@ class Poller(threading.Thread):
         while True:
             t = time.perf_counter()
             if self._handle_commands():
-                logger.info("장비 스레드 종료")
+                logger.info("장비 스레드 종료")   # 종료 때 해제한 연결은 저장하지 않음 → 다음 실행 때 복원
                 return
+            self._save_state()
             for m in list(self.machines):
                 self._poll(m)
             snap = self._build_snapshot()

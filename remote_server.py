@@ -16,7 +16,7 @@ import subprocess
 from http.cookies import SimpleCookie
 from urllib.parse import urlsplit, parse_qs
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from remote_page import INDEX_HTML, MANIFEST
+import webui
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,9 @@ class RemoteServer:
         self.log_dir = log_dir      # 가공/알람 이력 CSV 폴더 (notifier와 동일)
         self.icons = icons or {}    # {192: png bytes, 512: png bytes} 홈 화면 아이콘
         self.auth = auth or RemoteAuth()
+        # 휴대폰 페이지 (web/phone.html + 공통 팔레트·도우미) — 시작할 때 한 번 만들어 둔다
+        self.page = webui.page("phone.html").encode("utf-8")
+        self.manifest = webui.read("manifest.webmanifest").encode("utf-8")
         self._httpd = None
         self._lock = threading.Lock()
         self._snapshot = {"summary": {}, "machines": []}
@@ -209,9 +212,9 @@ class RemoteServer:
                 path, query = url.path, parse_qs(url.query)
                 # 페이지·아이콘은 공개 (로그인 화면을 띄워야 하므로), 데이터(/api/*)는 로그인 필요
                 if path in ("/", "/index.html"):
-                    self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
+                    self._send(200, "text/html; charset=utf-8", server.page)
                 elif path == "/manifest.webmanifest":
-                    self._send(200, "application/manifest+json", MANIFEST.encode("utf-8"))
+                    self._send(200, "application/manifest+json", server.manifest)
                 elif path in ("/icon-192.png", "/icon-512.png") and int(path[6:9]) in server.icons:
                     self._send(200, "image/png", server.icons[int(path[6:9])])
                 elif path.startswith("/api/") and not self._authed():
