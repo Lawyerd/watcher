@@ -1,9 +1,12 @@
+import os
+import time
 import ctypes
 import datetime
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox
 import customtkinter as ctk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 from remote_server import PIN_LEN
 
 # ── [v2.3] A안 다크 테마 팔레트 ──────────────────────────────
@@ -19,11 +22,12 @@ COL_BTN_HOV  = "#33333A"
 COL_ACCENT   = "#0A84FF"   # 강조(연결/저장)
 COL_ACCENT_HOV = "#0B6FD6"
 COL_CLOSE_HOV  = "#C42B1C"   # [v2.4] 닫기 버튼 호버 (Windows 표준 빨강)
-COL_REMOTE_ON  = "#0E2E1A"   # [v2.4] 원격 모니터링 켜짐 버튼 배경
+COL_ON_BG      = "#0E2E1A"   # [v2.4] 켜진 토글 버튼(📡 원격·🔔 알림) 배경
 COL_ALM_CODE   = "#FF6961"   # [v2.4] 알람 목록: 번호
 COL_ALM_MSG    = "#F2C9C6"   #        내용
 COL_ALM_SUB    = "#8E5A56"   #        발생 시각
 COL_ALM_LINE   = "#3A1B18"   #        구분선
+COL_OUTLINE    = "#3A3A42"   # [v2.4] 테두리 버튼 (연결 해제 상태)
 
 # [v2.4] 헤더 아이콘 글리프 (Segoe Fluent Icons / MDL2 Assets 공통 코드)
 ICON_SETTINGS = ""
@@ -33,6 +37,32 @@ ICON_COMPACT  = ""
 ICON_REMOTE   = ""
 ICON_MINIMIZE = ""
 ICON_CLOSE    = ""
+ICON_CHEV_DN  = ""   # 카드 펼치기
+ICON_CHEV_UP  = ""   # 카드 접기
+ICON_PLUG     = ""   # 연결 버튼 (Segoe Fluent Icons에만 있음 → 이미지로 그려 글자 옆에 붙임)
+
+# [v2.4] 패널 펼치기/접기 애니메이션
+ANIM_MS, ANIM_STEP_MS = 200, 15
+SWAP_DELAY_MS = 150   # 펼침이 끝난 뒤 실제 패널이 다 그려질 때까지 스냅샷을 덮어 두는 시간
+
+# [v2.4] 부하 막대: 0~150% 눈금, 80% 이상 노랑 · 100% 이상 빨강
+LOAD_SCALE = 150
+
+def glyph_image(glyph, color, px=14):
+    """아이콘 폰트 글리프를 CTkImage로 만든다 (CTkButton은 글꼴이 하나라 아이콘+글자를 함께 쓰려면 이미지 필요)"""
+    try:
+        font = ImageFont.truetype(os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "SegoeIcons.ttf"), px * 2)
+    except OSError:
+        return None   # Win10처럼 Fluent 아이콘 폰트가 없으면 글자만 표시
+    img = Image.new("RGBA", (px * 2, px * 2), (0, 0, 0, 0))
+    ImageDraw.Draw(img).text((px, px), glyph, font=font, fill=color, anchor="mm")
+    return ctk.CTkImage(light_image=img, dark_image=img, size=(px, px))
+
+def load_color(pct):
+    if pct is None:   return COL_SUB
+    if pct >= 100:    return STATE_COLORS["ALARM"][0]
+    if pct >= 80:     return STATE_COLORS["HOLD"][0]
+    return STATE_COLORS["RUN"][0]
 
 # Win32 상수 (테두리 없는 창을 작업표시줄에 표시/최소화하기 위함)
 GWL_STYLE, GWL_EXSTYLE = -16, -20
@@ -52,6 +82,49 @@ _user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
 _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 _user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
 _user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_user32.RedrawWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+RDW_INVALIDATE, RDW_ERASE = 0x1, 0x4
+_user32.GetDC.restype = ctypes.c_void_p
+_user32.GetDC.argtypes = [ctypes.c_void_p]
+_user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+_gdi32 = ctypes.WinDLL("gdi32")
+for _name, _res, _args in (
+        ("CreateCompatibleDC", ctypes.c_void_p, [ctypes.c_void_p]),
+        ("CreateCompatibleBitmap", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
+        ("SelectObject", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_void_p]),
+        ("DeleteObject", ctypes.c_int, [ctypes.c_void_p]),
+        ("DeleteDC", ctypes.c_int, [ctypes.c_void_p]),
+        ("BitBlt", ctypes.c_int, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint]),
+        ("GetDIBits", ctypes.c_int, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+                                     ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint])):
+    getattr(_gdi32, _name).restype, getattr(_gdi32, _name).argtypes = _res, _args
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32), ("biHeight", ctypes.c_int32),
+                ("biPlanes", ctypes.c_uint16), ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
+                ("biSizeImage", ctypes.c_uint32), ("biXPelsPerMeter", ctypes.c_int32), ("biYPelsPerMeter", ctypes.c_int32),
+                ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32)]
+
+def capture_screen(x, y, width, height):
+    """화면의 (x, y, w, h) 영역을 PIL 이미지로 — 보이는 그대로 복사(BitBlt)라 수 ms면 끝남.
+    (PrintWindow는 창 전체를 다시 그려 ~100ms, PIL ImageGrab은 모니터 전체를 찍고 잘라 ~40ms)"""
+    sdc = _user32.GetDC(None)
+    mdc = _gdi32.CreateCompatibleDC(sdc)
+    bmp = _gdi32.CreateCompatibleBitmap(sdc, width, height)
+    old = _gdi32.SelectObject(mdc, bmp)
+    try:
+        _gdi32.BitBlt(mdc, 0, 0, width, height, sdc, x, y, 0x00CC0020)   # SRCCOPY
+        bi = _BITMAPINFOHEADER(ctypes.sizeof(_BITMAPINFOHEADER), width, -height, 1, 32, 0, 0, 0, 0, 0, 0)
+        buf = ctypes.create_string_buffer(width * height * 4)
+        _gdi32.GetDIBits(mdc, bmp, 0, height, buf, ctypes.byref(bi), 0)
+        return Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1).convert("RGB")
+    finally:
+        _gdi32.SelectObject(mdc, old)
+        _gdi32.DeleteObject(bmp)
+        _gdi32.DeleteDC(mdc)
+        _user32.ReleaseDC(None, sdc)
 
 # 상태별 (강조색, 배지 배경)
 STATE_COLORS = {
@@ -130,6 +203,10 @@ class AppUI(ctk.CTk):
         self.font_ui = "Malgun Gothic"
         # [v2.4] 아이콘 폰트: Win11 Fluent, Win10은 MDL2 (글리프 코드 동일)
         self.font_icon = "Segoe Fluent Icons" if "Segoe Fluent Icons" in fams else "Segoe MDL2 Assets"
+        # [v2.4] 연결 버튼 플러그 아이콘 (연결하기 = 초록, 해제 = 회색)
+        self.img_connect    = glyph_image(ICON_PLUG, STATE_COLORS["RUN"][0])
+        self.img_disconnect = glyph_image(ICON_PLUG, COL_MUTED)
+        self.detail_cb = None   # 패널을 처음 펼칠 때 값을 바로 채우는 콜백 (MainController가 연결)
 
         self.machines = machines
         self.scroll = None
@@ -204,6 +281,7 @@ class AppUI(ctk.CTk):
 
         self.notify_btn = self._header_icon_btn(ICON_BELL, self.toggle_notify)
         self.notify_tooltip = ToolTip(self.notify_btn, "알림: 켜짐")
+        self._style_toggle_btn(self.notify_btn, True)   # 시작 시 알림 켜짐
 
         # [v2.2 추가] 장비 설정 버튼 (command는 MainController가 연결)
         self.settings_btn = self._header_icon_btn(ICON_SETTINGS)
@@ -250,6 +328,7 @@ class AppUI(ctk.CTk):
 
         self.scroll.pack(fill="both", expand=True, padx=10, pady=10)
         self.widgets = {}
+        self.expanded = set()   # [v2.4] 부하·가동률 패널이 펼쳐진 장비 IP
 
         for m in self.machines:
             card = ctk.CTkFrame(self.scroll, fg_color=COL_CARD, corner_radius=10)
@@ -272,6 +351,8 @@ class AppUI(ctk.CTk):
             name_l.pack(side="left")
             ip_l = ctk.CTkLabel(row1, text=m.ip, font=(self.font_num, 11), text_color=COL_SUB)
             ip_l.pack(side="left", padx=(10, 0), pady=(3, 0))
+            chev = ctk.CTkLabel(row1, text=ICON_CHEV_DN, width=16, font=(self.font_icon, 10), text_color=COL_SUB)
+            chev.pack(side="right", padx=(8, 0))
             badge = ctk.CTkLabel(row1, text="OFFLINE", font=(self.font_ui, 11, "bold"),
                                  text_color=STATE_COLORS["OFFLINE"][0],
                                  fg_color=STATE_COLORS["OFFLINE"][1],
@@ -280,13 +361,16 @@ class AppUI(ctk.CTk):
 
             row2 = ctk.CTkFrame(body, fg_color="transparent")
             row2.pack(fill="x", pady=(10, 0))
-            btn = ctk.CTkButton(row2, text="연결하기", width=84, height=26, corner_radius=6,
-                                fg_color=COL_ACCENT, hover_color=COL_ACCENT_HOV,
-                                text_color="#FFFFFF", font=(self.font_ui, 11, "bold"))
+            # [v2.4] 연결 버튼 A안: 초록 테두리 + 플러그 아이콘 (연결 후엔 회색 '해제')
+            btn = ctk.CTkButton(row2, text="연결", image=self.img_connect, compound="left",
+                                width=66, height=26, corner_radius=6, border_width=1,
+                                fg_color="transparent", hover_color=COL_ON_BG,
+                                border_color=STATE_COLORS["RUN"][0], text_color=STATE_COLORS["RUN"][0],
+                                font=(self.font_ui, 11, "bold"))
             btn.pack(side="left")
 
             metric_vals = {}
-            for lbl, key in (("MODE", "mode"), ("TOOL", "tool")):
+            for lbl, key in (("MODE", "mode"), ("TOOL", "tool"), ("PRG", "program")):
                 ctk.CTkLabel(row2, text=lbl, font=(self.font_ui, 10), text_color=COL_SUB).pack(side="left", padx=(20, 5))
                 v = ctk.CTkLabel(row2, text="-", font=(self.font_num, 14), text_color=COL_SUB)
                 v.pack(side="left")
@@ -297,6 +381,11 @@ class AppUI(ctk.CTk):
 
             # [v2.4] 알람 목록 (C안) — 알람일 때만 _render_alarms가 채워서 pack
             alm_f = ctk.CTkFrame(body, fg_color="transparent", height=10)
+
+            # [v2.4] 부하·가동률 패널 (A안) — 카드를 누르면 펼침, 내용은 첫 데이터에서 축 구성 보고 생성
+            # 높이를 애니메이션하기 위해 크기 고정(propagate 끔)된 tk.Frame으로 내용(inner)을 잘라 보여준다
+            det_f = tk.Frame(body, bg=COL_CARD, height=1, bd=0, highlightthickness=0)
+            det_f.pack_propagate(False)
 
             # --- [B] 최소화 모드용 컨테이너 ---
             comp_f = ctk.CTkFrame(card, fg_color="transparent", height=40)
@@ -315,18 +404,286 @@ class AppUI(ctk.CTk):
             self.widgets[m.ip] = {
                 "card": card, "full_f": full_f, "comp_f": comp_f, "btn": btn,
                 "strip": strip, "badge": badge,
-                "mode": metric_vals["mode"], "tool": metric_vals["tool"], "time": time_l,
+                "mode": metric_vals["mode"], "tool": metric_vals["tool"], "program": metric_vals["program"], "time": time_l,
                 "c_strip": c_strip, "c_time": c_time,
-                "alm_f": alm_f, "alm_key": ()
+                "alm_f": alm_f, "alm_key": (), "row2": row2,
+                "chev": chev, "det_f": det_f, "det": None,
             }
 
             for w_item in [card, comp_f, c_name, c_time, c_strip]:
                 w_item.bind("<ButtonPress-1>", self.on_drag_start)
                 w_item.bind("<B1-Motion>", self.on_drag_motion)
                 w_item.bind("<ButtonRelease-1>", self.on_drag_release)
+            self._bind_toggle(full_f, m.ip, skip=btn)
+
+    # ── [v2.4] 카드 클릭 → 부하·가동률 패널 펼치기/접기 ──────
+    def _bind_toggle(self, widget, ip, skip=None):
+        """widget 아래 모든 tk 위젯에 클릭 바인딩 (연결 버튼은 제외).
+        tk는 이벤트가 부모로 전달되지 않으므로 클릭된 위젯 하나에서만 한 번 실행된다."""
+        path = str(widget)
+        if skip is not None and (path == str(skip) or path.startswith(str(skip) + ".")):
+            return
+        tk.Misc.bind(widget, "<Button-1>", lambda e: self.toggle_detail(ip), add="+")
+        for child in widget.winfo_children():
+            self._bind_toggle(child, ip, skip)
+
+    def toggle_detail(self, ip):
+        w = self.widgets.get(ip)
+        if not w or self.is_compact:
+            return
+        opening = ip not in self.expanded
+        if opening:
+            self.expanded.add(ip)
+            if w["det"] is None:
+                # 보통은 prepare_detail이 미리 만들어 두지만, 아직 없으면 지금 만든다 (축 구성은 장비 데이터에서)
+                m = next((m for m in self.machines if m.ip == ip), None)
+                axes = (getattr(m, "data", None) or {}).get("axis_loads") or []
+                self._build_detail(ip, tuple(n for n, _ in axes))
+                self.update_idletasks()   # 방금 만든 패널의 높이를 알아야 하므로 (드문 경우라 한 번만)
+        else:
+            self.expanded.discard(ip)
+        w["chev"].configure(text=ICON_CHEV_UP if opening else ICON_CHEV_DN)
+        self._animate_detail(ip, opening)
+
+    def _animate_detail(self, ip, opening):
+        """[v2.4] 0.2초 동안 패널 높이(와 창 높이)를 ease-out으로 늘리거나 줄인다.
+        도중에 다시 누르면 지금 높이에서 반대 방향으로 이어서 움직인다."""
+        w = self.widgets[ip]
+        f = w["det_f"]
+        if w.get("anim"):
+            self.after_cancel(w["anim"])
+        w["anim_since"] = time.monotonic()
+        # 클릭 순간 레이아웃 재계산(update_idletasks, 수십 ms)을 하지 않도록 이미 계산된 크기만 읽는다
+        start = f.winfo_height() if f.winfo_ismapped() else 1
+        inner = w["det"]["inner"]
+        target = inner.winfo_reqheight() if opening else 1
+        # 패널 위젯 30여 개를 매 프레임 다시 그리면 프레임당 40ms 넘게 걸려 끊긴다 →
+        # 움직이는 동안은 패널을 찍어 둔 이미지 한 장으로 대신 보여주고, 끝나면 실제 위젯으로 돌린다
+        if not opening and inner.winfo_ismapped():
+            w["snap"] = self._panel_snapshot(ip) or w.get("snap")
+        self._show_snapshot(ip, True)
+        if opening:
+            # 창 크기를 매 프레임 바꾸면 전체 레이아웃을 다시 계산해 뚝뚝 끊긴다 →
+            # 펼칠 때는 창을 먼저 최종 높이로 늘려 두고, 접을 때는 끝난 뒤에 줄인다 (빈 공간은 배경색이라 티가 안 남)
+            if not self.needs_scroll:
+                need = self.header.winfo_reqheight() + 1 + self.scroll.winfo_reqheight() + 20 + (target - start)
+                h = max(self.init_height, min(850, need))
+                if h > self.winfo_height():
+                    self.geometry(f"{self.init_width}x{h}")
+            if not f.winfo_ismapped():
+                f.configure(height=1)
+                f.pack(fill="x")
+        clock = {}
+
+        def begin():
+            # 창 늘리기·패널 배치가 화면에 반영된 뒤부터 시간을 잰다 — 첫 프레임이 무거워도 중간을 건너뛰지 않게
+            clock["t0"] = time.monotonic()
+            step()
+
+        def step():
+            t = min(1.0, (time.monotonic() - clock["t0"]) * 1000 / ANIM_MS)
+            ease = 1 - (1 - t) ** 3
+            f.configure(height=max(1, round(start + (target - start) * ease)))
+            self.after_idle(self._repaint_background)
+            # 마지막 높이를 먼저 화면에 그린 뒤, 무거운 마무리(실제 패널로 교체·창 높이 조정)는 다음 프레임에
+            w["anim"] = self.after(ANIM_STEP_MS, step if t < 1 else finish)
+
+        def finish():
+            if opening:
+                # 최신 값을 채운 실제 패널을 스냅샷 '아래'에 먼저 그려 두고, 다 그려진 뒤 스냅샷을 걷어낸다
+                # (바로 바꾸면 위젯이 그려지는 동안 패널이 잠깐 비어 보임)
+                if self.detail_cb:
+                    self.detail_cb(ip)
+                self._show_snapshot(ip, False, keep_snapshot=True)
+                w["anim"] = self.after(SWAP_DELAY_MS, reveal)
+            else:
+                w["anim"] = None
+                f.pack_forget()
+                self.fit_height()
+
+        def reveal():
+            w["anim"] = None
+            if w.get("snap_lbl"):
+                w["snap_lbl"].place_forget()
+            self.fit_height()
+        w["anim"] = self.after_idle(begin)
+
+    def _repaint_background(self):
+        """카드가 움직이며 드러난 배경을 바로 다시 그리게 한다 — Tk가 이 영역을 무효화하지 않아
+        접을 때 아래 카드의 예전 모습이 줄줄이 잔상으로 남던 문제 (레이아웃이 끝난 뒤 after_idle로 호출)"""
+        canvas = getattr(self.scroll, "_canvas", None)   # CTkFrame 배경 캔버스
+        if canvas is not None:
+            _user32.RedrawWindow(canvas.winfo_id(), None, None, RDW_INVALIDATE | RDW_ERASE)
+
+    @property
+    def animating(self):
+        """펼침/접힘 애니메이션 중인지 — 그동안 MainController는 장비 폴링을 잠시 미룬다 (화면 끊김 방지)"""
+        # 혹시 애니메이션 도중 예외로 anim이 안 지워져도 폴링이 영영 멈추지 않게 2초 넘은 건 무시
+        now = time.monotonic()
+        return any(w.get("anim") and now - w.get("anim_since", 0) < 2 for w in self.widgets.values())
+
+    def _panel_snapshot(self, ip):
+        """펼쳐진 패널 모습을 이미지로 (다음 펼침/접힘 애니메이션에 사용, 0.2초라 값이 조금 지나도 티 안 남)"""
+        inner = self.widgets[ip]["det"]["inner"]
+        try:
+            return ImageTk.PhotoImage(capture_screen(inner.winfo_rootx(), inner.winfo_rooty(),
+                                                     inner.winfo_width(), inner.winfo_height()))
+        except Exception:
+            return None
+
+    def _show_snapshot(self, ip, on, keep_snapshot=False):
+        """on: 실제 패널 대신 스냅샷(없으면 빈 칸)을 보여줌 / off: 실제 패널로 복귀
+        keep_snapshot: 실제 패널을 놓되 스냅샷은 위에 그대로 덮어 둠 (나중에 걷어냄)"""
+        w = self.widgets[ip]
+        inner = w["det"]["inner"]
+        lbl = w.get("snap_lbl")
+        if on:
+            inner.place_forget()
+            if w.get("snap"):
+                if not lbl:
+                    lbl = w["snap_lbl"] = tk.Label(w["det_f"], bd=0, highlightthickness=0, bg=COL_CARD)
+                    self._bind_toggle(lbl, ip)
+                lbl.configure(image=w["snap"])
+                lbl.place(x=0, y=0)
+                lbl.lift()
+        else:
+            inner.place(x=0, y=0, relwidth=1)
+            if lbl:
+                if keep_snapshot and lbl.winfo_ismapped():
+                    lbl.lift()   # 나중에 만든 inner가 위로 올라오지 않게
+                else:
+                    lbl.place_forget()
+
+    def _snap_detail_height(self, ip):
+        """펼친 상태에서 내용이 바뀌었을 때(축 구성 변경 등) 패널 높이를 바로 맞춤"""
+        w = self.widgets[ip]
+        if ip in self.expanded and not w.get("anim"):
+            self.update_idletasks()
+            w["det_f"].configure(height=w["det"]["inner"].winfo_reqheight())
+            self.fit_height()
+
+    def _build_detail(self, ip, axis_names):
+        """축 구성(이름·개수)에 맞춰 패널 내용을 만든다. 축 구성이 바뀌면 다시 만든다."""
+        w = self.widgets[ip]
+        if w["det"]:
+            w["det"]["inner"].destroy()
+        w["snap"] = None   # 축 구성이 바뀌면 예전 스냅샷은 크기가 맞지 않음
+        f = ctk.CTkFrame(w["det_f"], fg_color="transparent")   # 축 구성이 바뀌면 통째로 교체
+        # pack이면 바깥 높이가 줄 때 내용을 찌그러뜨리며 매 프레임 재배치(느림) → place로 원래 크기 고정, 바깥이 잘라서 보여줌
+        f.place(x=0, y=0, relwidth=1)
+        d = {"axis_names": axis_names, "axes": {}, "inner": f}
+
+        ctk.CTkFrame(f, height=1, corner_radius=0, fg_color=COL_BORDER).pack(fill="x", pady=(10, 9))
+
+        sp = ctk.CTkFrame(f, fg_color="transparent")
+        sp.pack(fill="x")
+        ctk.CTkLabel(sp, text="스핀들", width=46, anchor="w", height=18,
+                     font=(self.font_ui, 10), text_color=COL_SUB).pack(side="left")
+        d["sp_rpm"] = ctk.CTkLabel(sp, text="-", width=76, anchor="e", height=18,
+                                   font=(self.font_num, 10), text_color=COL_SUB)
+        d["sp_rpm"].pack(side="right")
+        d["sp_pct"] = ctk.CTkLabel(sp, text="-", width=42, anchor="e", height=18,
+                                   font=(self.font_num, 11, "bold"), text_color=COL_SUB)
+        d["sp_pct"].pack(side="right")
+        d["sp_bar"] = ctk.CTkProgressBar(sp, height=9, corner_radius=4, fg_color=COL_BTN,
+                                         progress_color=COL_BTN, border_width=0)
+        d["sp_bar"].set(0)
+        d["sp_bar"].pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        if axis_names:
+            grid = ctk.CTkFrame(f, fg_color="transparent")
+            grid.pack(fill="x", pady=(9, 0))
+            for i, name in enumerate(axis_names):
+                grid.grid_columnconfigure(i, weight=1, uniform="axis")
+                cell = ctk.CTkFrame(grid, fg_color="transparent")
+                cell.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0))
+                top = ctk.CTkFrame(cell, fg_color="transparent")
+                top.pack(fill="x")
+                ctk.CTkLabel(top, text=name, height=16, font=(self.font_num, 10), text_color=COL_SUB).pack(side="left")
+                pct = ctk.CTkLabel(top, text="-", height=16, font=(self.font_num, 10), text_color=COL_SUB)
+                pct.pack(side="right")
+                bar = ctk.CTkProgressBar(cell, height=6, corner_radius=3, fg_color=COL_BTN,
+                                         progress_color=COL_BTN, border_width=0)
+                bar.set(0)
+                bar.pack(fill="x", pady=(2, 0))
+                d["axes"][name] = (bar, pct)
+
+        ut = ctk.CTkFrame(f, fg_color="transparent")
+        ut.pack(fill="x", pady=(10, 0))
+        ctk.CTkLabel(ut, text="오늘 가동률", height=18, font=(self.font_ui, 10), text_color=COL_SUB).pack(side="left")
+        d["ut_pct"] = ctk.CTkLabel(ut, text="-", height=18, font=(self.font_num, 12, "bold"), text_color=COL_TEXT)
+        d["ut_pct"].pack(side="left", padx=(6, 0))
+        d["ut_sub"] = ctk.CTkLabel(ut, text="", height=18, font=(self.font_ui, 10), text_color=COL_SUB)
+        d["ut_sub"].pack(side="left", padx=(6, 0))
+
+        # 0시 → 지금 타임라인 (가공 초록 · 알람 빨강)
+        d["tl"] = tk.Canvas(f, height=8, bg=COL_BTN, highlightthickness=0, bd=0)
+        d["tl"].pack(fill="x", pady=(5, 0))
+        d["tl"].bind("<Configure>", lambda e, ip=ip: self._draw_timeline(ip))
+        ends = ctk.CTkFrame(f, fg_color="transparent")
+        ends.pack(fill="x")
+        ctk.CTkLabel(ends, text="0시", height=14, font=(self.font_num, 9), text_color=COL_SUB).pack(side="left")
+        d["tl_now"] = ctk.CTkLabel(ends, text="지금", height=14, font=(self.font_num, 9), text_color=COL_SUB)
+        d["tl_now"].pack(side="right")
+        d["util"] = None
+
+        w["det"] = d
+        self._bind_toggle(f, ip)   # 패널을 눌러도 접힘
+
+    def prepare_detail(self, ip, axes):
+        """[v2.4] 접혀 있는 동안 패널을 미리 만들어 둔다 — 클릭 순간 위젯 30여 개를 만드느라 0.3초 멈추는 것 방지.
+        축 구성이 바뀌었을 때(처음 연결 등)만 다시 만든다."""
+        w = self.widgets.get(ip)
+        names = tuple(n for n, _ in axes)
+        if w and ip not in self.expanded and (w["det"] is None or (names and names != w["det"]["axis_names"])):
+            self._build_detail(ip, names)
+
+    def apply_detail(self, ip, data, util, connected):
+        """[v2.4] 펼쳐진 카드의 부하·가동률 갱신 (MainController가 펼쳐진 장비만 호출)"""
+        w = self.widgets.get(ip)
+        if not w or ip not in self.expanded:
+            return
+        axes = data.get("axis_loads") or []
+        names = tuple(n for n, _ in axes)
+        if w["det"] is None or (names and names != w["det"]["axis_names"]):
+            self._build_detail(ip, names)
+            self._snap_detail_height(ip)
+        d = w["det"]
+
+        # 값이 0이면 막대 색을 트랙 색과 같게 — 0%일 때 왼쪽 끝에 점이 남는 것 방지
+        sp = data.get("spindle_load") if connected else None
+        d["sp_bar"].set(min(sp or 0, LOAD_SCALE) / LOAD_SCALE)
+        d["sp_bar"].configure(progress_color=load_color(sp) if sp else COL_BTN)
+        d["sp_pct"].configure(text=f"{sp}%" if sp is not None else "-", text_color=load_color(sp))
+        rpm = data.get("spindle_rpm") if connected else None
+        d["sp_rpm"].configure(text=f"{rpm:,}rpm" if rpm is not None else "-")
+        loads = dict(axes) if connected else {}
+        for name, (bar, pct) in d["axes"].items():
+            v = loads.get(name)
+            bar.set(min(v or 0, LOAD_SCALE) / LOAD_SCALE)
+            bar.configure(progress_color=load_color(v) if v else COL_BTN)
+            pct.configure(text=f"{v}%" if v is not None else "-", text_color=COL_VALUE if v is not None else COL_SUB)
+
+        d["util"] = util
+        d["ut_pct"].configure(text=f"{round(util['ratio'] * 100)}%")
+        h, m = divmod(util["run_sec"] // 60, 60)
+        d["ut_sub"].configure(text=f"· 가공 {h}시간 {m}분" if h else f"· 가공 {m}분")
+        d["tl_now"].configure(text="지금 " + datetime.datetime.now().strftime("%H:%M"))
+        self._draw_timeline(ip)
+
+    def _draw_timeline(self, ip):
+        d = (self.widgets.get(ip) or {}).get("det")
+        if not d or not d["util"]:
+            return
+        c, util = d["tl"], d["util"]
+        c.delete("all")
+        width, total = c.winfo_width(), util["now_sec"]
+        for start, end, st in util["segments"]:
+            x0, x1 = width * start / total, max(width * end / total, width * start / total + 1)
+            c.create_rectangle(x0, 0, x1, 8, width=0, fill=STATE_COLORS[st][0])
 
     # ── [v2.3] 상태를 UI에 일괄 반영 ──────────────────────────
-    def apply_status(self, ip, mode, status, tool, cyc, is_alarm, connected, alarms=()):
+    def apply_status(self, ip, mode, status, tool, cyc, is_alarm, connected, alarms=(), program=None):
         w = self.widgets.get(ip)
         if not w: return
 
@@ -338,7 +695,7 @@ class AppUI(ctk.CTk):
         key = tuple((a["code"], a["msg"]) for a in alarms)
         if key != w["alm_key"]:
             w["alm_key"] = key
-            self._render_alarms(w["alm_f"], alarms)
+            self._render_alarms(w, alarms)
             self.fit_height()
 
         if state == "ALARM":     badge_txt = "▲ ALARM" + (f" {len(alarms)}" if len(alarms) > 1 else "")
@@ -354,24 +711,36 @@ class AppUI(ctk.CTk):
         val_col = COL_VALUE if connected else COL_SUB
         w["mode"].configure(text=mode if connected else "-", text_color=val_col)
         w["tool"].configure(text=tool if connected else "-", text_color=val_col)
+        # [v2.4] 프로그램명 — 길면 사이클 타임을 밀어내지 않게 줄임
+        prg = (program if len(program) <= 14 else program[:13] + "…") if connected and program else "-"
+        w["program"].configure(text=prg, text_color=val_col)
 
         t_col = accent if state == "ALARM" else (COL_TEXT if connected else COL_SUB)
         t_txt = cyc if connected else "-"
         w["time"].configure(text=t_txt, text_color=t_col)
         w["c_time"].configure(text=t_txt, text_color=t_col)
 
-        if connected:
-            w["btn"].configure(text="연결 해제", fg_color=COL_BTN, hover_color=COL_BTN_HOV, text_color=COL_MUTED)
-        else:
-            w["btn"].configure(text="연결하기", fg_color=COL_ACCENT, hover_color=COL_ACCENT_HOV, text_color="#FFFFFF")
+        # 이미지가 있는 버튼은 configure마다 다시 그리므로 연결 상태가 바뀔 때만 갱신
+        if w.get("btn_on") != connected:
+            w["btn_on"] = connected
+            if connected:
+                w["btn"].configure(text="해제", image=self.img_disconnect, border_color=COL_OUTLINE,
+                                   text_color=COL_MUTED, hover_color=COL_BTN)
+            else:
+                w["btn"].configure(text="연결", image=self.img_connect, border_color=STATE_COLORS["RUN"][0],
+                                   text_color=STATE_COLORS["RUN"][0], hover_color=COL_ON_BG)
 
-    def _render_alarms(self, frame, alarms):
-        for child in frame.winfo_children():
-            child.destroy()
+    def _render_alarms(self, w, alarms):
+        # CTkFrame의 내부 캔버스까지 지우지 않도록, 내용은 매번 새 안쪽 프레임에 그린다
+        if w.get("alm_inner"):
+            w["alm_inner"].destroy()
+            w["alm_inner"] = None
         if not alarms:
-            frame.pack_forget()
+            w["alm_f"].pack_forget()
             return
 
+        frame = w["alm_inner"] = ctk.CTkFrame(w["alm_f"], fg_color="transparent")
+        frame.pack(fill="x")
         ctk.CTkFrame(frame, height=1, corner_radius=0, fg_color=COL_ALM_LINE).grid(
             row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         for i, a in enumerate(alarms, start=1):
@@ -383,7 +752,7 @@ class AppUI(ctk.CTk):
             ctk.CTkLabel(frame, text=a["since"], height=20, font=(self.font_num, 11),
                          text_color=COL_ALM_SUB).grid(row=i, column=2, sticky="ne", padx=(12, 0))
         frame.grid_columnconfigure(1, weight=1)
-        frame.pack(fill="x", pady=(10, 0))
+        w["alm_f"].pack(fill="x", pady=(10, 0), after=w["row2"])   # 펼침 패널보다 위(정보 줄 바로 아래)
 
     def fit_height(self):
         """[v2.4] 알람 목록이 펼쳐지거나 접히면 창 높이를 내용에 맞춤 (전체 모드, 스크롤 없는 경우만)"""
@@ -407,21 +776,23 @@ class AppUI(ctk.CTk):
         current_state = not self.notify_enabled.get()
         self.notify_enabled.set(current_state)
 
-        if current_state:
-            self.notify_btn.configure(text=ICON_BELL)
-            self.notify_tooltip.text = "알림: 켜짐"
+        self.notify_btn.configure(text=ICON_BELL if current_state else ICON_BELL_OFF)
+        self.notify_tooltip.text = "알림: 켜짐" if current_state else "알림: 꺼짐"
+        self._style_toggle_btn(self.notify_btn, current_state)
+
+    def _style_toggle_btn(self, btn, on):
+        """[v2.4] 켜진 토글 버튼(📡·🔔)은 초록 배경으로 강조해 꺼진 상태와 구분"""
+        if on:
+            btn.configure(fg_color=COL_ON_BG, hover_color=COL_ON_BG, text_color=STATE_COLORS["RUN"][0])
         else:
-            self.notify_btn.configure(text=ICON_BELL_OFF)
-            self.notify_tooltip.text = "알림: 꺼짐"
+            btn.configure(fg_color="transparent", hover_color=COL_BTN, text_color=COL_MUTED)
 
     # ── [v2.4] 원격 모니터링 버튼 상태 표시 ──────────────────
     def set_remote_state(self, on, urls=()):
+        self._style_toggle_btn(self.remote_btn, on)
         if on:
-            self.remote_btn.configure(fg_color=COL_REMOTE_ON, hover_color=COL_REMOTE_ON,
-                                      text_color=STATE_COLORS["RUN"][0])
             self.remote_tooltip.text = "원격 모니터링: 켜짐 (절전 차단 중)\n" + "\n".join(urls) + "\n우클릭: 설정"
         else:
-            self.remote_btn.configure(fg_color="transparent", hover_color=COL_BTN, text_color=COL_MUTED)
             self.remote_tooltip.text = "원격 모니터링: 꺼짐\n우클릭: 설정"
     # ─────────────────────────────────────────────────────────────
 
@@ -764,7 +1135,7 @@ class RemoteDialog(ctk.CTkToplevel):
     def set_url(self, url):
         """Funnel 주소는 tailscale 명령으로 확인하느라 늦게 채워짐 (MainController가 호출)"""
         if url:
-            self.url_lbl.configure(text="  " + url, fg_color=COL_REMOTE_ON, text_color=STATE_COLORS["RUN"][0])
+            self.url_lbl.configure(text="  " + url, fg_color=COL_ON_BG, text_color=STATE_COLORS["RUN"][0])
         else:
             self.url_lbl.configure(text="  Funnel 꺼짐 · 사내망/Tailscale로만 접속", text_color=COL_MUTED,
                                    font=(self.font_ui, 11))

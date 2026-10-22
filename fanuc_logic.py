@@ -43,6 +43,36 @@ MAX_ALARMS = 10
 ALARM_PREFIX = {0: "SW", 1: "PW", 2: "IO", 3: "PS", 4: "OT", 5: "OH", 6: "SV", 7: "SR",
                 8: "MC", 9: "SP", 10: "DS", 11: "IE", 12: "BG", 13: "SN", 15: "EX", 19: "PC"}
 
+# [v2.4] 부하 미터 (cnc_rdspmeter 스핀들 / cnc_rdsvmeter 서보축)
+class LOADELM(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_int), ("dec", ctypes.c_short), ("unit", ctypes.c_short),
+        ("name", ctypes.c_char), ("suff1", ctypes.c_char), ("suff2", ctypes.c_char), ("reserve", ctypes.c_char),
+    ]
+
+class ODBSPLOAD(ctypes.Structure):
+    _fields_ = [("spload", LOADELM), ("spspeed", LOADELM)]
+
+class ODBACT(ctypes.Structure):
+    _fields_ = [("dummy", ctypes.c_short * 2), ("data", ctypes.c_int)]
+
+# [v2.4] 실행 중인 프로그램 (cnc_exeprgname: O번호 또는 파일명, 예 "O1234" / "1011-2.nc")
+class ODBEXEPRG(ctypes.Structure):
+    _fields_ = [("name", ctypes.c_char * 36), ("o_num", ctypes.c_int)]
+
+MAX_AXES = 8
+
+def _meter(e):
+    return round(e.data / (10 ** e.dec) if e.dec > 0 else e.data)
+
+def _axis_name(e):
+    """축 이름 (X, Y, Z, A, B, C …). 빈 칸(\\x00)이면 None — 기계마다 축 구성이 달라 빈 슬롯이 섞여 온다"""
+    name = e.name.decode("ascii", "ignore").strip("\x00 ")
+    if not name:
+        return None
+    suff = e.suff1.decode("ascii", "ignore").strip("\x00 ")
+    return name + suff if suff.isalnum() else name
+
 class FanucMachine:
     def __init__(self, name, ip, port=8193, dll_path=""):
         self.name = name
@@ -56,7 +86,10 @@ class FanucMachine:
         self.data = {
             "mode": "-", "status": "OFFLINE", 
             "cycle_time": "00:00:00", "tool": "T--", "next_tool": "T--", "is_alarm": False,
-            "alarms": []   # [{"code": "SV0401", "msg": "...", "since": "HH:MM:SS"}]
+            "alarms": [],  # [{"code": "SV0401", "msg": "...", "since": "HH:MM:SS"}]
+            "spindle_load": None, "spindle_rpm": None,   # [v2.4] 스핀들 부하(%)·실제 회전수
+            "axis_loads": [],                            # [("X", 12), ("Y", 9), …] 기계에 있는 축만
+            "program": None,                             # [v2.4] 실행 중인 프로그램명 (없으면 None)
         }
 
     def connect(self):
@@ -144,3 +177,23 @@ class FanucMachine:
             spindle, nxt = pmc.idata[0], pmc.idata[1]
             self.data["tool"] = f"T{spindle:02d}" if spindle > 0 else "T00"
             self.data["next_tool"] = f"T{nxt:02d}" if nxt > 0 else "T00"
+
+        # 4. [v2.4] 스핀들·축 부하 (축 구성은 기계마다 다름: XYZ / XYZBC / XYZAC …)
+        sp = (ODBSPLOAD * 2)()
+        n = ctypes.c_short(2)
+        if self.fanuc.cnc_rdspmeter(self.handle, ctypes.c_short(-1), ctypes.byref(n), sp) == 0 and n.value > 0:
+            self.data["spindle_load"] = _meter(sp[0].spload)
+        act = ODBACT()
+        if self.fanuc.cnc_acts(self.handle, ctypes.byref(act)) == 0:
+            self.data["spindle_rpm"] = act.data
+        sv = (LOADELM * MAX_AXES)()
+        n = ctypes.c_short(MAX_AXES)
+        if self.fanuc.cnc_rdsvmeter(self.handle, ctypes.byref(n), sv) == 0:
+            self.data["axis_loads"] = [(_axis_name(a), _meter(a)) for a in sv[:max(0, min(n.value, MAX_AXES))]
+                                       if _axis_name(a)]
+
+        # 5. [v2.4] 실행 중인 프로그램 — 선택된 프로그램이 없으면 "O0"으로 오므로 None 처리
+        prg = ODBEXEPRG()
+        if self.fanuc.cnc_exeprgname(self.handle, ctypes.byref(prg)) == 0:
+            name = prg.name.decode("cp949", "replace").strip("\x00 ")
+            self.data["program"] = None if name in ("", "O0", "O0000") else name

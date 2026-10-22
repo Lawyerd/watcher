@@ -9,13 +9,14 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 | 파일 | 역할 |
 |---|---|
 | `main.py` | 진입점 + MainController. 폴링 루프(보임 0.5s / 숨김 3s), 자동 재연결, 트레이, 설정 저장, 아이콘 생성 |
-| `fanuc_logic.py` | FOCAS 통신 (`FanucMachine`). 상태/사이클타임(파라미터 6757·6758)/공구번호(PMC D0450·D0452) 읽기 |
-| `monitor_ui.py` | UI 전부 (`AppUI`, `SettingsDialog`, `RemoteDialog`(📡 PIN 설정 창), 다크 테마 팔레트). 상태 반영은 `AppUI.apply_status()` 한 곳으로 일원화. 기본 타이틀바 없음(헤더가 타이틀바), 알람 시 카드에 알람 목록 펼침 + 창 높이 자동(`fit_height`) |
+| `fanuc_logic.py` | FOCAS 통신 (`FanucMachine`). 상태/사이클타임(파라미터 6757·6758)/공구번호(PMC D0450·D0452)/알람/스핀들·축 부하(`cnc_rdspmeter`·`cnc_rdsvmeter`, 회전수 `cnc_acts`)/실행 프로그램명(`cnc_exeprgname`, 선택 없음·MDI는 "O0"→None) 읽기 |
+| `utilization.py` | 가동률 (`UtilizationTracker`). 상태 변화를 `logs/state_YYYY-MM-DD.csv`에 기록, 오늘 0시부터 RUN 비율·타임라인 구간 계산 |
+| `monitor_ui.py` | UI 전부 (`AppUI`, `SettingsDialog`, `RemoteDialog`(📡 PIN 설정 창), 다크 테마 팔레트). 상태 반영은 `AppUI.apply_status()` 한 곳으로 일원화. 기본 타이틀바 없음(헤더가 타이틀바), 알람 시 카드에 알람 목록 펼침 + 창 높이 자동(`fit_height`). 카드 클릭 → 부하·가동률 패널 펼침(`toggle_detail`/`apply_detail`, 펼친 장비만 갱신) |
 | `notifier.py` | 상태 전이 감지 → winotify 토스트 + `logs/history_YYYY-MM-DD.csv` 가공 이력 + `logs/alarm_YYYY-MM-DD.csv` 알람 발생/해제 이력 기록 |
 | `remote_server.py` | 원격 모니터링 (`RemoteServer`). 읽기 전용 HTTP 서버(포트 8765): `/api/status`(스냅샷), `/api/history`·`/api/alarms`(`?date=`로 logs/ CSV), 홈 화면 아이콘·manifest. `/api/*`는 PIN 로그인 필요(`RemoteAuth`, `remote.json`에 PIN 해시·쿠키 서명 키). 켜져 있는 동안 시스템 절전 차단 |
-| `remote_page.py` | 휴대폰 페이지 HTML 한 장 (숫자 키패드 PIN 로그인 → 가동/정지/알람 타일 + 현황/가공 이력/알람 이력 탭) |
+| `remote_page.py` | 휴대폰 페이지 HTML 한 장 (숫자 키패드 PIN 로그인 → 가동/정지/알람 타일 + 현황/가공 이력/알람 이력 탭, 장비를 누르면 부하·가동률) |
 | `machines.json` | 장비 목록 (앱 내 ⚙️ 설정 UI로 편집 가능, 재시작 불필요) |
-| `remote.json`, `logs/`, `cnc_watcher.log` | 실행 시 exe 옆에 생기는 런타임 파일 (PIN 해시 / CSV 이력 / 로그). 모두 gitignore |
+| `remote.json`, `logs/`, `cnc_watcher.log` | 실행 시 exe 옆에 생기는 런타임 파일 (PIN 해시 / CSV 이력: history·alarm·state / 로그). 모두 gitignore |
 | `read_status.py`, `connection_test.py` | 단독 연결 테스트 스크립트 |
 
 ## 반드시 알아야 할 제약 (고생해서 알아낸 것들)
@@ -37,6 +38,11 @@ FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실�
 14. **원격 접속 방화벽**: 공장 PC 네트워크는 "공용", Tailscale 어댑터는 "개인"으로 잡힌다. exe별 허용 규칙은 버전마다 경로가 바뀌므로 포트 규칙(8765, 원격 IP 100.64.0.0/10)으로 허용하는 게 안정적.
 15. **원격 페이지는 Tailscale Funnel로 인터넷에 공개될 수 있다** (`tailscale funnel --bg 8765` → `https://기기.tailnet.ts.net`). 그래서 PIN 없이는 서버를 켤 수 없게 했고(📡 → PIN 설정 창), 페이지·아이콘 외 모든 `/api/*`는 로그인 쿠키(30일, HMAC 서명) 필요. PIN 5회 실패 시 5분 잠금. Funnel 요청은 tailscaled가 127.0.0.1로 프록시하므로 방화벽과 무관하고, 클라이언트 IP로 사용자를 구분할 수 없다.
 16. **PIN 기능 이전 빌드로 📡를 켜면 Funnel을 통해 PIN 없이 공개된다** (2026-10-21 실제로 발생 → exe 종료 후 재빌드로 해결). Funnel이 켜진 PC에서는 반드시 PIN 기능이 들어간 빌드만 실행할 것. 앱의 📡가 꺼져 있으면 Funnel 주소는 502가 된다(정상).
+17. **축 구성은 기계마다 다르다** (DVF5000 = X·Y·Z·C·B, DVF6500 = X·Y·Z·C·A, 3축기 = X·Y·Z). 축 이름·개수를 하드코딩하지 말고 `cnc_rdsvmeter`가 돌려주는 이름을 그대로 쓴다. 빈 슬롯(`\x00`)이 섞여 오므로 걸러낼 것. Z축은 정지 중에도 40~55%(주축 무게 지지)로 나오는 게 정상.
+18. **CTkFrame 내용을 다시 그릴 때 `winfo_children()` 전체를 destroy하지 말 것** — CTkFrame 내부 캔버스까지 지워진다. 알람 목록·부하 패널은 안쪽 프레임(`alm_inner`, `det["inner"]`)을 통째로 교체한다. 카드 클릭 바인딩은 `tk.Misc.bind`로 하위 tk 위젯마다 한 번씩(이벤트가 부모로 전파되지 않음, 같은 위젯에 두 번 걸면 펼쳤다 바로 접힘).
+19. **가동률은 앱이 켜져 있던 동안만 안다.** 1분마다 state CSV 수정 시각을 갱신(하트비트)하고, 다음 실행 때 그 시각 이후를 OFFLINE으로 넣어 비정상 종료 후 마지막 상태가 계속 이어진 것으로 계산되는 걸 막는다. 정상 종료 시(`quit_all`) OFFLINE으로 마감.
+20. **Tk 애니메이션은 매 프레임 비용과 '실장비 폴링 중' 반응 시간을 재고 만들 것** (카드 펼침: 처음엔 프레임당 100ms, 클릭 후 0.3초 멈춤, 접을 때 잔상). 해결: ① 내용 프레임은 `pack` 대신 `place`로 원래 크기 고정 ② 움직이는 동안은 패널 스냅샷 이미지 한 장으로 대신(`capture_screen`=BitBlt 수 ms, PrintWindow는 ~100ms라 금지) ③ 창 크기는 펼칠 땐 시작 전·접을 땐 끝난 뒤 한 번만, 시계는 `after_idle`로 화면 반영 뒤 시작 ④ 패널은 접힌 동안 `prepare_detail`로 미리 생성, 값 채우기는 애니메이션 뒤 ⑤ 실제 패널은 스냅샷 아래에 먼저 그리고 150ms 뒤 스냅샷 제거(빈 화면 깜빡임 방지) ⑥ 애니메이션 중엔 `update_loop`가 폴링을 미룸(장비당 FOCAS ~17ms) ⑦ 카드가 움직여 드러난 배경은 Tk가 다시 안 그려 잔상이 남으므로 `RedrawWindow`로 직접 무효화. 측정은 별도 프로세스로 화면을 50fps로 찍어(`ImageGrab`) 프레임 차이를 본다 — 가짜 데이터 테스트만으로는 폴링 영향이 안 보였다.
+21. **CTkButton은 글꼴이 하나**라 아이콘 글리프+한글을 같이 못 쓴다 → `glyph_image()`로 Segoe Fluent Icons 글리프를 PIL 이미지로 그려 `image=`로 붙인다 (연결 버튼 플러그 ``, Win10엔 폰트가 없어 글자만).
 
 ## 원격 접속 (휴대폰) 운영
 

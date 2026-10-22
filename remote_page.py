@@ -53,8 +53,24 @@ INDEX_HTML = """<!doctype html>
   .st { font-size: 12px; margin-top: 2px; }
   .right { text-align: right; flex: none; }
   .cyc { font-size: 18px; }
+  .prg { font-size: 11px; color: #8E8E93; max-width: 130px; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta { font-size: 12px; color: #636366; margin-top: 2px; }
-  .detail { margin: 12px 0 0 14px; padding-top: 10px; border-top: 1px dashed #2C2C33; font-size: 13px;
+  .exp { margin: 12px 0 0 14px; padding-top: 10px; border-top: 1px dashed #2C2C33; }
+  .lrow { display: grid; grid-template-columns: 46px 1fr 44px; align-items: center; gap: 8px; font-size: 12px; margin-top: 6px; }
+  .lrow:first-child { margin-top: 0; }
+  .lrow .n { color: #636366; }
+  .lrow .p { text-align: right; font-family: ui-monospace, Menlo, Consolas, monospace; color: #D1D1D6; }
+  .lbar { height: 6px; border-radius: 3px; background: #26262C; overflow: hidden; }
+  .lbar i { display: block; height: 100%; border-radius: 3px; }
+  .lrow.sp .lbar { height: 9px; }
+  .lrow.sp .p { font-weight: 700; }
+  .rpm { font-size: 11px; color: #636366; text-align: right; margin: 2px 0 4px; }
+  .util { font-size: 12px; color: #636366; margin-top: 12px; }
+  .util b { font: 700 14px ui-monospace, Menlo, Consolas, monospace; color: #F2F2F7; margin: 0 4px; }
+  .tl { position: relative; height: 8px; border-radius: 3px; background: #26262C; overflow: hidden; margin-top: 5px; }
+  .tl i { position: absolute; top: 0; bottom: 0; }
+  .tlx { display: flex; justify-content: space-between; font: 10px ui-monospace, Menlo, Consolas, monospace; color: #636366; margin-top: 2px; }
+  .detail { margin-top: 12px; font-size: 13px;
             display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; }
   .detail .k { color: #636366; }
   .detail .v { color: #D1D1D6; }
@@ -166,19 +182,43 @@ function machineRow(m) {
   let h = `<div class="m" data-name="${esc(m.name)}"><div class="row">
     <div class="who"><span class="bar" style="background:${fg}"></span><div style="min-width:0">
       <div class="name">${esc(m.name)}</div><div class="st" style="color:${stCol}">${esc(stateLine(m))}</div></div></div>
-    <div class="right"><div class="cyc mono" style="color:${cycCol}">${on ? esc(m.cycle_time) : "-"}</div>
+    <div class="right">${on && m.program ? `<div class="prg mono">${esc(m.program)}</div>` : ""}<div class="cyc mono" style="color:${cycCol}">${on ? esc(m.cycle_time) : "-"}</div>
       <div class="meta">${on ? esc(m.tool) + " · " : ""}${m.done_today}회</div></div></div>`;
   if (expanded.has(m.name)) {
-    h += `<div class="detail">
+    h += `<div class="exp">${loadsHtml(m)}<div class="detail">
       <span class="k">모드</span><span class="v mono">${on ? esc(m.mode) : "-"}</span>
       <span class="k">공구</span><span class="v mono">${on ? `${esc(m.tool)} → 대기 ${esc(m.next_tool)}` : "-"}</span>
       <span class="k">상태</span><span class="v">${esc(LABEL[m.state] || m.status)} · ${esc(m.state_since)}부터</span>
       <span class="k">오늘 완료</span><span class="v">${m.done_today}회</span>
       ${m.state === "ALARM" && m.alarms.length ? `<div class="alm">${m.alarms.map(a =>
         `<span class="c mono">${esc(a.code)}</span><span class="msg">${esc(a.msg)}</span><span class="t mono">${esc(a.since)}</span>`).join("")}</div>` : ""}
-    </div>`;
+    </div></div>`;
   }
   return h + "</div>";
+}
+
+// ── 부하·가동률 (장비를 눌렀을 때만) — 막대는 0~150%, 80%↑ 노랑 · 100%↑ 빨강 ──
+const loadCol = p => p == null ? "#636366" : p >= 100 ? "#FF453A" : p >= 80 ? "#FFD60A" : "#30D158";
+function loadRow(name, p, sp) {
+  return `<div class="lrow${sp ? " sp" : ""}"><span class="n">${esc(name)}</span>
+    <span class="lbar"><i style="width:${Math.min(p || 0, 150) / 1.5}%;background:${loadCol(p)}"></i></span>
+    <span class="p"${sp ? ` style="color:${loadCol(p)}"` : ""}>${p == null ? "-" : p + "%"}</span></div>`;
+}
+
+function loadsHtml(m) {
+  const on = m.connected;
+  let h = loadRow("스핀들", on ? m.spindle_load : null, true);
+  if (on && m.spindle_rpm != null) h += `<div class="rpm mono">${m.spindle_rpm.toLocaleString()} rpm</div>`;
+  h += (m.axis_loads || []).map(([n, p]) => loadRow(n, on ? p : null)).join("");   // 기계에 있는 축만
+  const u = m.util;
+  if (u) {
+    const mins = Math.floor(u.run_sec / 60), hh = Math.floor(mins / 60);
+    h += `<div class="util">오늘 가동률<b>${Math.round(u.ratio * 100)}%</b>· 가공 ${hh ? hh + "시간 " : ""}${mins % 60}분</div>
+      <div class="tl">${u.segments.map(([s, e, st]) =>
+        `<i style="left:${s / u.now_sec * 100}%;width:${Math.max((e - s) / u.now_sec * 100, 0.5)}%;background:${C[st][0]}"></i>`).join("")}</div>
+      <div class="tlx"><span>0시</span><span>지금</span></div>`;
+  }
+  return h;
 }
 
 function renderNow() {

@@ -14,6 +14,7 @@ import pystray
 from fanuc_logic import FanucMachine
 from monitor_ui import AppUI, SettingsDialog, RemoteDialog, state_of, summary_of
 from notifier import StatusNotifier
+from utilization import UtilizationTracker
 from remote_server import RemoteServer, RemoteAuth, local_urls, funnel_url
 
 from logging.handlers import RotatingFileHandler
@@ -93,6 +94,7 @@ class MainController:
         
         # [v2.0 수정] 로그 폴더 생성을 위해 BASE_DIR 함께 전달
         self.notifier = StatusNotifier(icon_path=ICON_PNG, base_dir=BASE_DIR)
+        self.util     = UtilizationTracker(self.notifier.log_dir)   # [v2.4] 오늘 가동률
         self.app      = AppUI(self.machines)
 
         if os.path.exists(ICON_PATH):
@@ -109,6 +111,7 @@ class MainController:
         self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=self._web_icons(), auth=self.remote_auth)
         self.app.remote_btn.configure(command=self.toggle_remote)
         self.app.remote_btn.bind("<Button-3>", lambda e: self.open_remote_dialog())
+        self.app.detail_cb = self._fill_detail
 
         self.setup_tray()
         self.update_loop()
@@ -199,6 +202,7 @@ class MainController:
     def quit_all(self):
         self.remote.stop()
         self.tray_icon.stop()
+        self.util.close([m.name for m in self.machines])
         for m in self.machines: m.disconnect()
         self.app.quit()
 
@@ -243,11 +247,18 @@ class MainController:
         if not self.remote.running:
             self.start_remote()
 
+    def _fill_detail(self, ip):
+        """카드를 처음 펼칠 때 다음 폴링을 기다리지 않고 부하·가동률을 바로 채움"""
+        m = next((m for m in self.machines if m.ip == ip), None)
+        if m:
+            self.app.apply_detail(ip, m.data, self.util.summary(m.name), m.is_connected)
+
     def _track_state(self, m):
         """[v2.4] 상태(RUN/ALARM/…)가 바뀐 시각 기록 → 휴대폰 페이지의 'N분째' 표시용"""
         st = state_of(m.data["status"], m.data["is_alarm"], m.is_connected)
         if getattr(m, "_state", None) != st:
             m._state, m._state_since = st, datetime.datetime.now()
+        self.util.update(m.name, st)
 
     def publish_snapshot(self):
         """원격 서버로 넘길 상태 스냅샷 (메인 스레드에서 생성 → 서버 스레드는 FOCAS 접근 안 함)"""
@@ -266,6 +277,9 @@ class MainController:
                 "state_since": since.strftime("%H:%M:%S"),
                 "state_sec": int((now - since).total_seconds()),
                 "done_today": counts.get(m.name, 0),
+                "spindle_load": d["spindle_load"], "spindle_rpm": d["spindle_rpm"],
+                "axis_loads": d["axis_loads"], "program": d["program"],
+                "util": self.util.summary(m.name),
             })
         col, txt, _ = summary_of(self.machines)
         self.remote.update_snapshot({
@@ -287,6 +301,11 @@ class MainController:
             self.notifier.check_and_notify(m.name, "OFFLINE", "00:00:00", False, self.app.notify_enabled.get())
 
     def update_loop(self):
+        # [v2.4] 카드 펼침/접힘 애니메이션 중에는 폴링(장비당 ~17ms FOCAS + 화면 갱신)을 잠깐 미룬다
+        #        — 메인 스레드가 막히면 애니메이션이 뚝뚝 끊기고 잔상이 남음 (최대 0.25초 지연)
+        if self.app.animating:
+            self.app.after(50, self.update_loop)
+            return
         for m in self.machines:
             if m.is_connected:
                 try: m.fetch_data()
@@ -308,7 +327,7 @@ class MainController:
                     if not self.app.is_hidden:
                         # [v2.3] 상태 반영은 AppUI.apply_status가 일괄 처리
                         self.app.apply_status(m.ip, m.data["mode"], st, m.data["tool"],
-                                              cyc, m.data["is_alarm"], True, alarms)
+                                              cyc, m.data["is_alarm"], True, alarms, m.data["program"])
             else:
                 # [v2.2 추가] 절전 복귀 등으로 끊긴 경우 자동 재연결
                 if m.want_connected:
@@ -318,6 +337,12 @@ class MainController:
                     self.app.apply_status(m.ip, "-", "OFFLINE", "-", "-", False, False)
 
             self._track_state(m)
+            # [v2.4] 카드가 펼쳐진 장비만 부하·가동률 패널 갱신, 접힌 장비는 패널만 미리 만들어 둠
+            if not self.app.is_hidden:
+                if m.ip in self.app.expanded:
+                    self.app.apply_detail(m.ip, m.data, self.util.summary(m.name), m.is_connected)
+                else:
+                    self.app.prepare_detail(m.ip, m.data["axis_loads"])
 
         if not self.app.is_hidden:
             self.app.update_summary()
