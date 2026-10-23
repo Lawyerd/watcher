@@ -5,6 +5,7 @@ import json
 import time
 import base64
 import ctypes
+import shutil
 import socket
 import logging
 import tempfile
@@ -22,11 +23,15 @@ START_IN_TRAY = "--tray" in sys.argv   # 윈도우 자동 실행 시 '트레이�
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
+    # [v3.0] 기록·설정은 exe와 분리된 고정 폴더 — 버전을 올리거나 다시 빌드해도(dist 폴더 초기화) 그대로 이어진다
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "CNC Watcher")
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = BASE_DIR   # python main.py(개발)는 프로젝트 폴더 — 실제 기록과 섞이지 않게
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# 로그도 exe 옆에 — 자동 실행 때는 작업 폴더가 system32라 상대 경로를 쓰면 엉뚱한 곳에 생긴다
-_handlers = [RotatingFileHandler(os.path.join(BASE_DIR, "cnc_watcher.log"), maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")]
+# 로그도 기록 폴더에 (절대 경로) — 자동 실행 때는 작업 폴더가 system32라 상대 경로를 쓰면 엉뚱한 곳에 생긴다
+_handlers = [RotatingFileHandler(os.path.join(DATA_DIR, "cnc_watcher.log"), maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")]
 if sys.stderr:   # exe(--windowed)에서는 stderr가 없다
     _handlers.append(logging.StreamHandler())
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=_handlers)
@@ -42,10 +47,13 @@ def is_already_running():
     except socket.error:
         return True
 
+# exe 옆 (빌드 결과물): dll, icons, fonts / 기록 폴더 (DATA_DIR): 아래 설정·기록 파일과 logs/
 DLL_DIR      = os.path.join(BASE_DIR, "dll")
-CONFIG_FILE  = os.path.join(BASE_DIR, "machines.json")
-REMOTE_FILE  = os.path.join(BASE_DIR, "remote.json")    # [v2.4] 원격 PIN 해시·로그인 서명 키
+CONFIG_FILE  = os.path.join(DATA_DIR, "machines.json")
+REMOTE_FILE  = os.path.join(DATA_DIR, "remote.json")    # [v2.4] 원격 PIN 해시·로그인 서명 키
 CONN_FILE    = "connections.json"                       # [v3.0] 꺼질 때 연결돼 있던 장비 (다음 실행 때 복원)
+PUSH_FILE    = os.path.join(DATA_DIR, "push.json")      # [v3.0] 휴대폰 푸시 서명 키·구독 목록
+DATA_ITEMS   = ("machines.json", "remote.json", CONN_FILE, "push.json", "logs")
 DLL_PATH     = os.path.join(DLL_DIR, "Fwlib64.dll")
 ICONS_DIR    = os.path.join(BASE_DIR, "icons")
 ICON_PATH    = os.path.join(ICONS_DIR, "watcher_icon.ico")
@@ -59,10 +67,11 @@ if os.path.exists(DLL_DIR):
 # DLL 경로 설정 뒤에 import (fanuc_logic이 Fwlib을 찾을 수 있도록)
 from notifier import StatusNotifier                                          # noqa: E402
 from utilization import UtilizationTracker                                   # noqa: E402
-from remote_server import RemoteServer, RemoteAuth, PIN_LEN, local_urls, funnel_url   # noqa: E402
+from remote_server import RemoteServer, RemoteAuth, PIN_LEN, local_urls, funnel_url, tailscale_installed   # noqa: E402
 from poller import Poller                                                    # noqa: E402
 import webui                                                                 # noqa: E402
 import startup                                                               # noqa: E402
+from webpush import PushSender                                               # noqa: E402
 
 WIDTH, COMPACT_WIDTH = 640, 240
 _user32 = ctypes.WinDLL("user32")
@@ -110,6 +119,21 @@ def web_icons():
         img.resize((px, px), Image.LANCZOS).save(buf, format="PNG")
         icons[px] = buf.getvalue()
     return icons
+
+
+def seed_data_dir():
+    """exe 옆에 예전 방식의 설정·기록이 있으면 기록 폴더에 없는 것만 한 번 복사한다.
+    새 PC에서는 함께 배포한 machines.json이 장비 목록의 시작값이 된다."""
+    if DATA_DIR == BASE_DIR:
+        return
+    for name in DATA_ITEMS:
+        src, dst = os.path.join(BASE_DIR, name), os.path.join(DATA_DIR, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                (shutil.copytree if os.path.isdir(src) else shutil.copy2)(src, dst)
+                logger.info(f"기록 폴더로 복사: {name}")
+            except OSError as e:
+                logger.error(f"기록 폴더로 복사 실패 ({name}): {e}")
 
 
 def load_configs():
@@ -164,7 +188,8 @@ class Api:
     # ── 상태 ─────────────────────────────────────────────
     def init(self):
         a = self._app
-        return {"version": VERSION, "notify": a.poller.notify_enabled, "pin_len": PIN_LEN, "selftest": SELFTEST}
+        return {"version": VERSION, "notify": a.poller.notify_enabled, "pin_len": PIN_LEN, "selftest": SELFTEST,
+                "tailscale": tailscale_installed()}
 
     def status(self):
         return dict(self._app.poller.snapshot(), events=self._app.poller.pop_events())
@@ -185,6 +210,8 @@ class Api:
         if a.remote.running:
             a.poller.request("remote_stop")
             return {"running": False}
+        if not tailscale_installed():
+            return {"no_tailscale": True}   # 켜도 휴대폰으로는 못 보고 사내망에만 열리므로 막는다 (매번 다시 확인)
         if not a.auth.has_pin:
             return {"need_pin": True}   # PIN 없이 인터넷에 공개되지 않도록 PIN부터
         a.poller.request("remote_start")
@@ -197,6 +224,8 @@ class Api:
 
     def remote_save(self, pin):
         a, pin = self._app, str(pin or "").strip()
+        if not tailscale_installed():
+            return {"error": "Tailscale이 설치되지 않은 PC라 원격 모니터링을 쓸 수 없어요"}
         if pin:
             if len(pin) != PIN_LEN or not pin.isdigit():
                 return {"error": f"PIN은 숫자 {PIN_LEN}자리예요"}
@@ -312,11 +341,15 @@ class Api:
 class App:
     def __init__(self):
         ensure_icons()
-        self.data_dir = tempfile.mkdtemp(prefix="cncw_selftest_") if SELFTEST else BASE_DIR
-        self.notifier = StatusNotifier(icon_path=ICON_PNG, base_dir=self.data_dir)
+        seed_data_dir()
+        self.data_dir = tempfile.mkdtemp(prefix="cncw_selftest_") if SELFTEST else DATA_DIR
+        logger.info(f"기록 폴더: {self.data_dir}")
+        # 휴대폰 푸시는 📡 원격 모니터링이 켜져 있을 때만 보낸다 (꺼져 있으면 알림을 눌러도 페이지가 안 열림)
+        self.push = PushSender(None if SELFTEST else PUSH_FILE, enabled=lambda: self.remote.running)
+        self.notifier = StatusNotifier(icon_path=ICON_PNG, base_dir=self.data_dir, push=self.push)
         self.util = UtilizationTracker(self.notifier.log_dir)
         self.auth = RemoteAuth(None if SELFTEST else REMOTE_FILE)
-        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=web_icons(), auth=self.auth)
+        self.remote = RemoteServer(log_dir=self.notifier.log_dir, icons=web_icons(), auth=self.auth, push=self.push)
         self.poller = Poller(load_configs(), DLL_PATH, self.notifier, self.util, self.remote,
                              state_path=os.path.join(self.data_dir, CONN_FILE))
         self.poller.notify_enabled = not SELFTEST
@@ -361,7 +394,9 @@ class App:
         except Exception:
             img = draw_watcher_icon(64)
 
-        menu = (pystray.MenuItem('열기', lambda icon, item: self.show_window(), default=True), pystray.MenuItem('종료', lambda icon, item: self.quit()))
+        menu = (pystray.MenuItem('열기', lambda icon, item: self.show_window(), default=True),
+                pystray.MenuItem('기록 폴더 열기', lambda icon, item: os.startfile(self.data_dir)),   # 가공·알람 이력 CSV (엑셀로 열기)
+                pystray.MenuItem('종료', lambda icon, item: self.quit()))
         self.tray = pystray.Icon("CNC Watcher", img, "CNC Watcher", menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
 

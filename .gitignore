@@ -9,6 +9,7 @@ venv/
 build/
 dist/
 *.spec
+!CNC_Watcher.spec
 
 # 설정 및 데이터 (보안을 위해 실제 파일은 제외)
 machines.json
@@ -22,3 +23,5 @@ logs/
 remote.json
 # [v3.0] 꺼질 때 연결돼 있던 장비 (실행 시 생성)
 connections.json
+# [v3.0] 휴대폰 푸시 서명 키·구독 목록 (실행 시 생성)
+push.json

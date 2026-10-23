@@ -13,7 +13,17 @@
 <!-- [v2.4] 휴대폰 원격 모니터링 페이지 (B안: 요약 타일 + 현황/가공 이력/알람 이력 탭). remote_server.py가 응답한다 -->
 <style>
 /*@COMMON_CSS@*/
-  body { -webkit-tap-highlight-color: transparent; }
+  /* 아이폰 홈 화면 앱(standalone)에서는 스크롤이 안 생길 만큼 내용이 짧으면 고정 하단바가 바닥에서 떠 보인다
+     (내용이 긴 가공 이력 탭은 정상, 현황 탭만 뜸 — 사용자 제보). 100dvh로 맞추는 것만으로는 안 고쳐졌다
+     (앱 모드에서 화면 높이가 상태바만큼 작게 잡히는 것으로 보임) → 항상 화면보다 조금 길게 만들어
+     짧은 탭도 긴 탭처럼 스크롤 가능한 상태로 둔다 */
+  html { background: var(--bg); }
+  body { -webkit-tap-highlight-color: transparent;
+         min-height: calc(100vh + env(safe-area-inset-top) + 1px); min-height: calc(100dvh + env(safe-area-inset-top) + 1px); }
+  #title { cursor: pointer; }
+  #diag { position: fixed; z-index: 30; right: 8px; top: calc(env(safe-area-inset-top) + 44px); pointer-events: none;
+          background: rgba(0,0,0,.82); color: var(--yellow); border: 1px solid var(--line); border-radius: 8px;
+          padding: 6px 8px; font: 11px/1.5 var(--mono); white-space: pre; }
   .top { display: flex; justify-content: space-between; align-items: baseline;
          padding: calc(14px + env(safe-area-inset-top)) 16px 8px; }
   .top b { font-size: 16px; }
@@ -65,12 +75,46 @@
   .datebar b { font-size: 15px; }
   .datebar button { background: var(--card); color: var(--text); border: 0; border-radius: 10px; width: 46px; height: 38px; font-size: 15px; }
   .datebar button:disabled { opacity: .3; }
-  .sum { display: flex; gap: 8px; flex-wrap: wrap; }
-  .chip { background: var(--card); border-radius: 10px; padding: 6px 10px; font-size: 12px; color: var(--muted); }
-  .chip b { color: var(--text); }
   .kind { font-size: 11px; border-radius: 8px; padding: 2px 8px; }
   .empty { padding: 32px 0; text-align: center; color: var(--sub); font-size: 13px; }
-  nav { position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(3, 1fr);
+  /* 가공 이력: 중간에 멈춘 시간 · 알람으로 끝난 가공 */
+  .pz { color: var(--yellow); }
+  .atag { font: 11px var(--ui); border-radius: 6px; padding: 1px 6px; color: var(--red); background: var(--red-bg); margin-left: 4px; }
+  /* 그날 요약 (가공 이력 탭 맨 위) */
+  .daysum { background: var(--card); border-radius: 14px; padding: 2px 14px; margin-bottom: 10px; }
+  .ds { padding: 10px 0; border-top: 1px solid var(--line); }
+  .ds:first-child { border-top: 0; }
+  .dsh { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
+  .dsv { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .dsv b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }   /* 고정폭 글꼴은 한글 '시간·분' 앞뒤가 벌어짐 */
+  .dsh .dsv { margin-top: 0; }
+  /* 휴대폰 알림 카드 (현황 탭 아래) */
+  .pcard { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-top: 12px; }
+  .ptitle { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .prow { display: flex; justify-content: space-between; align-items: center; font-size: 14px; padding: 7px 0; }
+  .sw { width: 44px; height: 26px; border-radius: 13px; border: 0; padding: 0; background: var(--outline); position: relative; flex: none; transition: background .2s; }
+  .sw i { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .sw.on { background: var(--green); }
+  .sw.on i { transform: translateX(18px); }
+  .sw:disabled { opacity: .4; }
+  .pnote { font-size: 12px; color: var(--sub); margin-top: 4px; line-height: 1.5; }
+  .ptest { margin-top: 10px; background: var(--btn); color: var(--val); border: 0; border-radius: 10px; height: 34px; padding: 0 14px; font-size: 13px; }
+  /* 통계 탭: 최근 7일·30일 하루 가공 시간 막대 + 날짜별 목록 */
+  .seg { display: flex; gap: 6px; margin: 4px 0 2px; }
+  .seg button { background: none; border: 0; color: var(--sub); border-radius: 10px; padding: 6px 14px; font-size: 13px; }
+  .seg button.on { background: var(--btn); color: var(--text); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+  .chart { position: relative; display: flex; align-items: flex-end; gap: 6px; height: 140px; padding-top: 18px; border-bottom: 1px solid var(--line); }
+  .chart.d30 { gap: 2px; }
+  .ymax { position: absolute; top: 0; left: 0; font-size: 10px; color: var(--sub); }
+  .bg { flex: 1; height: 100%; display: flex; align-items: flex-end; gap: 1px; }
+  .bg i { flex: 1; border-radius: 2px 2px 0 0; }
+  .cx { display: flex; gap: 6px; font-size: 10px; color: var(--sub); margin-top: 4px; }
+  .cx.d30 { gap: 2px; }
+  .cx span { flex: 1; text-align: center; white-space: nowrap; }
+  .tot { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  nav { position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(4, 1fr);
         background: var(--nav); border-top: 1px solid var(--line); padding: 8px 0 calc(10px + env(safe-area-inset-bottom)); }
   nav button { background: none; border: 0; color: var(--sub); font-size: 11px;
                display: flex; flex-direction: column; align-items: center; gap: 3px; }
@@ -112,12 +156,13 @@
     <button data-k="del" class="del" aria-label="지우기"><svg viewBox="0 0 24 24"><path d="M9 5h11v14H9l-6-7z"/><path d="M12.5 9.5l5 5M17.5 9.5l-5 5"/></svg></button>
   </div>
 </section>
-<div class="top"><b>CNC Watcher</b><span id="top-st">연결 중…</span></div>
+<div class="top"><b id="title">CNC Watcher</b><span id="top-st">연결 중…</span></div>
 <main id="view"><div class="empty">불러오는 중…</div></main>
 <nav>
   <button class="on" data-tab="now"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>현황</button>
   <button data-tab="hist"><svg viewBox="0 0 24 24"><path d="M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17M11 6h9M11 12h9M11 18h9"/></svg>가공 이력</button>
   <button data-tab="alarm"><svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>알람 이력</button>
+  <button data-tab="stats"><svg viewBox="0 0 24 24"><path d="M4 20h16M7 16v-5M12 16V6M17 16v-8"/></svg>통계</button>
 </nav>
 <script>
 /*@COMMON_JS@*/
@@ -199,7 +244,137 @@ function renderNow() {
   $("view").innerHTML = `<div class="tiles">${tile(n(["RUN"]), "가동", "RUN")}${tile(n(["HOLD", "IDLE"]), "정지", "IDLE")}${tile(n(["ALARM"]), "알람", "ALARM")}</div>`
     + (off ? `<div class="offline">연결 끊긴 장비 ${off}대</div>` : "")
     + `<div class="list">${ms.map(machineRow).join("")}</div>`
-    + `<div class="hint">장비를 누르면 상세 정보</div>`;
+    + `<div class="hint">장비를 누르면 상세 정보</div>` + pushCard();
+}
+
+// ── 휴대폰 푸시 알림 (B안: 현황 탭 아래 카드) — PC에서 📡가 켜져 있을 때만 서버가 보낸다 ──
+const push = { state: "init", prefs: { alarm: false, done: false }, key: null, msg: "", busy: false, started: false };
+const PUSH_NOTE = {
+  init: "확인 중…",
+  insecure: "외부 접속 주소(https)로 열어야 알림을 켤 수 있어요",
+  ios: "아이폰은 공유 버튼 → '홈 화면에 추가'로 연 다음 켤 수 있어요 (iOS 16.4 이상)",
+  unsupported: "이 브라우저는 알림을 지원하지 않아요",
+  denied: "알림이 차단돼 있어요. 휴대폰 설정에서 CNC Watcher 알림을 허용해 주세요",
+  ready: "PC에서 📡 원격 모니터링이 켜져 있을 때만 알림이 와요",
+};
+const b64ToBytes = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0));
+// 이 휴대폰의 구독이 PC의 지금 서명 키로 만든 것인지 — PC 쪽 push.json이 바뀌면(새로 만들어지면) 예전 구독으로는 알림이 안 온다
+function sameKey(sub) {
+  const k = sub.options && sub.options.applicationServerKey;
+  if (!k || !push.key) return true;
+  const a = new Uint8Array(k), b = b64ToBytes(push.key);
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 401) { showLogin(); throw "로그인이 필요해요"; }
+  return r.json();
+}
+
+function pushCard() {
+  const ok = push.state === "ready" && !push.busy;
+  const row = (k, label) => `<div class="prow"><span>${label}</span><button class="sw${push.prefs[k] ? " on" : ""}" data-push="${k}"${ok ? "" : " disabled"} aria-label="${label}"><i></i></button></div>`;
+  return `<div class="pcard"><div class="ptitle">이 휴대폰으로 알림 받기</div>${row("alarm", "🚨 알람 발생")}${row("done", "✅ 가공 완료")}
+    <div class="pnote">${esc(push.msg || PUSH_NOTE[push.state])}</div>
+    ${ok && (push.prefs.alarm || push.prefs.done) ? `<button class="ptest" data-ptest>테스트 알림 보내기</button>` : ""}</div>`;
+}
+
+async function pushInit() {
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  if (!window.isSecureContext) push.state = "insecure";
+  else if (!("serviceWorker" in navigator) || !("PushManager" in window))   // 아이폰 사파리 탭에서는 PushManager가 없다
+    push.state = /iPhone|iPad|iPod/.test(navigator.userAgent) && !standalone ? "ios" : "unsupported";
+  else try {
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    push.key = (await (await fetch("/api/push/key", { cache: "no-store" })).json()).key;
+    const sub = await reg.pushManager.getSubscription();
+    const known = sub && sameKey(sub) && (await post("/api/push/check", { endpoint: sub.endpoint })).prefs;
+    if (known) push.prefs = known;
+    else if (sub) {   // PC가 이 휴대폰을 모름(키가 바뀜 등) → 예전 구독은 정리하고 다시 켜 달라고 안내
+      await sub.unsubscribe();
+      push.msg = "PC 쪽 알림 설정이 바뀌었어요. 받을 알림을 다시 켜 주세요";
+    }
+    push.state = Notification.permission === "denied" ? "denied" : "ready";
+  } catch (e) { push.state = "unsupported"; }
+  if (tab === "now") renderNow();
+}
+
+async function togglePush(kind) {
+  const want = { ...push.prefs, [kind]: !push.prefs[kind] };
+  push.busy = true; push.msg = ""; renderNow();
+  try {
+    // 권한 요청은 누른 직후 가장 먼저 (아이폰은 사용자 동작 안에서만 물어볼 수 있다)
+    if ((want.alarm || want.done) && Notification.permission === "default" && await Notification.requestPermission() !== "granted") {
+      push.state = Notification.permission === "denied" ? "denied" : "ready";
+      throw "알림을 허용해야 받을 수 있어요";
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && !sameKey(sub)) { await sub.unsubscribe(); sub = null; }   // 예전 키 구독은 다시 만든다
+    if (want.alarm || want.done) {
+      sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(push.key) });
+      const r = await post("/api/push", { sub: sub.toJSON(), ...want });
+      if (r.error) throw r.error;
+    } else if (sub) {
+      await post("/api/push", { sub: sub.toJSON(), alarm: false, done: false });   // 둘 다 끄면 구독 삭제
+      await sub.unsubscribe();
+    }
+    push.prefs = want;
+  } catch (e) { push.msg = typeof e === "string" ? e : "알림 설정에 실패했어요"; }
+  push.busy = false; renderNow();
+}
+
+async function testPush() {
+  const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (!sub) return;
+  await post("/api/push/test", { endpoint: sub.endpoint });
+  push.msg = "테스트 알림을 보냈어요 (몇 초 안에 와요)"; renderNow();
+}
+
+// ── 통계 탭 (B안): 최근 7일·30일 하루 가공 시간 + 날짜별 목록, 날짜를 누르면 그날 가공 이력 ──
+const MC = ["var(--green)", "var(--m2)", "var(--m3)", "var(--m4)"];
+let statDays = 7, statData = null;
+function hm(sec) {
+  const m = Math.floor(sec / 60), h = Math.floor(m / 60);
+  return h ? `${h}시간 ${m % 60}분` : `${m}분`;
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(`/api/stats?days=${statDays}`, { cache: "no-store" });
+    if (r.status === 401) return showLogin();
+    const d = await r.json();
+    if (tab !== "stats") return;
+    statData = d; renderStats();
+  } catch (e) { setTop(null, "PC에 연결할 수 없음"); }
+}
+
+function renderStats() {
+  const names = statData.machines, days = [...statData.days].reverse();   // 그래프는 오래된 날 → 오늘
+  const cut = (x, n) => (x.machines[n] || {}).cut_sec || 0;
+  const max = Math.max(60, ...days.flatMap(x => names.map(n => cut(x, n))));
+  const d30 = statDays === 30 ? " d30" : "";
+  let h = `<div class="seg">${[7, 30].map(n => `<button data-days="${n}"${n === statDays ? ' class="on"' : ""}>${n}일</button>`).join("")}</div>
+    <div class="pcard"><div class="legend">하루 가공 시간 ${names.map((n, i) => `<span><i style="background:${MC[i % 4]}"></i>${esc(n)}</span>`).join("")}</div>
+    <div class="chart${d30}"><span class="ymax">${hm(max)}</span>${days.map(x =>
+      `<div class="bg" data-date="${x.date}">${names.map((n, i) => `<i style="height:${cut(x, n) / max * 100}%;background:${MC[i % 4]}"></i>`).join("")}</div>`).join("")}</div>
+    <div class="cx mono${d30}">${days.map((x, i) => `<span>${!d30 || i % 5 === 0 || i === days.length - 1 ? +x.date.slice(8) : ""}</span>`).join("")}</div></div>`;
+  h += `<div class="list">${statData.days.map(x => {
+    const t = names.reduce((a, n) => { const m = x.machines[n] || {}; a.c += m.count || 0; a.s += m.cut_sec || 0; a.a += m.alarms || 0; return a; }, { c: 0, s: 0, a: 0 });
+    return `<div class="h row" data-date="${x.date}"><div><b>${x.date.slice(5)} (${x.weekday})</b><div class="meta">가공 ${t.c}회 · 알람 ${t.a}회</div></div>
+      <span class="tot"${t.s ? "" : ' style="color:var(--sub)"'}>${t.s ? hm(t.s) : "-"}</span></div>`;
+  }).join("")}</div><div class="hint">날짜를 누르면 그날 가공 이력</div>`;
+  $("view").innerHTML = h;
+}
+
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x.dataset.tab === t));
+  window.scrollTo(0, 0);
+  if (t === "now") return renderNow();
+  $("view").innerHTML = `<div class="empty">불러오는 중…</div>`;
+  t === "stats" ? loadStats() : loadLog();
 }
 
 // ── 가공 이력 / 알람 이력 탭 (logs/ CSV) ─────────────────
@@ -214,11 +389,9 @@ function renderLog() {
   const rows = log.rows;
   let h = dateBar();
   if (tab === "hist") {
-    const cnt = {};
-    rows.forEach(r => cnt[r.machine] = (cnt[r.machine] || 0) + 1);
-    h += `<div class="sum">${Object.keys(cnt).map(k => `<span class="chip">${esc(k)} <b>${cnt[k]}회</b></span>`).join("")}</div>`;
+    h += daySummary(log.summary || []);
     h += rows.length ? `<div class="list">${rows.map(r => `<div class="h row">
-        <div><b>${esc(r.machine)}</b><div class="meta mono">${esc(r.start)} → ${esc(r.end)}</div></div>
+        <div><b>${esc(r.machine)}</b><div class="meta mono">${esc(r.start)} → ${esc(r.end)}${pauseText(r.pause)}${r.result === "알람" ? `<span class="atag">알람</span>` : ""}</div></div>
         <span class="mono cyc">${esc(r.cycle)}</span></div>`).join("")}</div>`
       : `<div class="empty">이 날 가공 이력이 없어요</div>`;
   } else {
@@ -233,6 +406,24 @@ function renderLog() {
       : `<div class="empty">이 날 알람 이력이 없어요</div>`;
   }
   $("view").innerHTML = h;
+}
+
+// 시작→끝 중 가공하지 않은 시간 (M00·M01·싱글 블록·피드 홀드) — 오른쪽 사이클 타임은 순수 가공 시간
+function pauseText(p) {
+  const s = p ? p.split(":").reduce((a, x) => a * 60 + +x, 0) : 0;
+  if (!s) return "";
+  const m = Math.floor(s / 60), h = Math.floor(m / 60);
+  return ` <span class="pz">· 정지 ${h ? `${h}시간 ${m % 60}분` : m ? `${m}분 ${s % 60}초` : `${s}초`}</span>`;
+}
+
+// 그날 요약 (A안): 장비별 가동률·타임라인(상태 기록이 있는 날만)·가공 횟수·가공 시간·알람
+function daySummary(list) {
+  if (!list.length) return "";
+  const end = date === today ? "지금" : "24시";
+  return `<div class="daysum">${list.map(s => `<div class="ds">
+    <div class="dsh"><b>${esc(s.machine)}</b>${s.util ? `<span class="dsv">가동률 <b>${utilPct(s.util)}</b></span>` : ""}</div>
+    ${s.util ? `<div class="tl">${timelineHtml(s.util)}</div><div class="tlx"><span>0시</span><span>${end}</span></div>` : ""}
+    <div class="dsv">가공 <b>${s.count}회</b> · <b>${hm(s.cut_sec)}</b> · 알람 <b>${s.alarms}회</b></div></div>`).join("")}</div>`;
 }
 
 async function loadLog() {
@@ -258,9 +449,13 @@ function shiftDate(n) {
 
 // ── 이벤트 / 갱신 ─────────────────────────────────────
 $("view").addEventListener("click", e => {
-  const day = e.target.closest("[data-day]");
-  if (day) return shiftDate(+day.dataset.day);
-  const row = e.target.closest(".m");
+  const t = sel => e.target.closest(sel);
+  if (t("[data-day]")) return shiftDate(+t("[data-day]").dataset.day);
+  if (t("[data-push]")) return togglePush(t("[data-push]").dataset.push);
+  if (t("[data-ptest]")) return testPush();
+  if (t("[data-days]")) { statDays = +t("[data-days]").dataset.days; return loadStats(); }
+  if (t("[data-date]") && tab === "stats") { date = t("[data-date]").dataset.date; return setTab("hist"); }
+  const row = t(".m");
   if (row && tab === "now") {
     const n = row.dataset.name;
     expanded.has(n) ? expanded.delete(n) : expanded.add(n);
@@ -268,13 +463,35 @@ $("view").addEventListener("click", e => {
   }
 });
 
-document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
-  tab = b.dataset.tab;
-  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
-  window.scrollTo(0, 0);
-  if (tab === "now") renderNow();
-  else { $("view").innerHTML = `<div class="empty">불러오는 중…</div>`; loadLog(); }
-}));
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+// ── 화면 크기 확인용: 제목 'CNC Watcher'를 누르면 켜고 끔 — 아이폰 앱 모드 하단바 위치 진단 (캡처해서 보내면 됨) ──
+function px(css, prop) {
+  const d = document.createElement("div");
+  d.style.cssText = "position:absolute;visibility:hidden;left:0;top:0;" + css;
+  document.body.appendChild(d);
+  const v = prop ? parseFloat(getComputedStyle(d)[prop]) : d.getBoundingClientRect().height;
+  d.remove();
+  return Math.round(v);
+}
+
+function diag() {
+  const old = $("diag");
+  if (old) return old.remove();
+  const nav = document.querySelector("nav").getBoundingClientRect(), de = document.documentElement, vv = window.visualViewport;
+  const box = document.createElement("div");
+  box.id = "diag";
+  box.textContent = [
+    `앱 모드 ${matchMedia("(display-mode: standalone)").matches ? "예" : "아니오"} · 탭 ${tab}`,
+    `화면 ${screen.width}×${screen.height}  창 ${innerWidth}×${innerHeight}`,
+    `보이는 영역 ${vv ? Math.round(vv.height) : "-"}  문서 ${de.clientHeight}/${de.scrollHeight}`,
+    `vh ${px("height:100vh")} dvh ${px("height:100dvh")} svh ${px("height:100svh")} lvh ${px("height:100lvh")}`,
+    `여백 위 ${px("padding-top:env(safe-area-inset-top)", "paddingTop")} 아래 ${px("padding-bottom:env(safe-area-inset-bottom)", "paddingBottom")}`,
+    `하단바 ${Math.round(nav.top)}~${Math.round(nav.bottom)}  스크롤 ${Math.round(scrollY)}`,
+  ].join("\n");
+  document.body.appendChild(box);
+}
+$("title").addEventListener("click", diag);
 
 // ── PIN 로그인 (6자리 누르면 바로 확인, 성공하면 30일 유지 쿠키) ──
 let pin = "", busy = false;
@@ -336,9 +553,10 @@ async function tick() {
     if (r.status === 401) return showLogin();
     last = await r.json();
     setTop(last);
+    if (!push.started) { push.started = true; pushInit(); }   // 로그인된 뒤 한 번 (구독 키는 로그인이 필요)
     if (tab === "now") renderNow();
   } catch (e) { setTop(null, "PC에 연결할 수 없음"); }
-  if (tab !== "now" && ++ticks % 5 === 0) loadLog();   // 이력 탭은 15초마다 갱신
+  if (tab !== "now" && ++ticks % 5 === 0) tab === "stats" ? loadStats() : loadLog();   // 이력·통계 탭은 15초마다 갱신
 }
 tick(); setInterval(tick, 3000);
 </script>

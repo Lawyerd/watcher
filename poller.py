@@ -5,6 +5,7 @@ import logging
 import datetime
 import threading
 from fanuc_logic import FanucMachine
+from remote_server import tailscale_installed
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,10 @@ class Poller(threading.Thread):
                 elif action == "set_machines":
                     self._set_machines(arg)
                 elif action == "remote_start":
+                    if not tailscale_installed():   # 화면(Api)에서도 막지만, 서버를 켜는 유일한 곳이라 여기서 한 번 더
+                        logger.warning("Tailscale 미설치 → 원격 모니터링 시작 거부")
+                        self._event(type="error", msg="Tailscale이 설치되지 않은 PC라 원격 모니터링을 켤 수 없습니다.")
+                        continue
                     try:
                         self.remote.start()
                     except OSError as e:
@@ -174,7 +179,7 @@ class Poller(threading.Thread):
             if m.is_connected:
                 d = m.data
                 res = self.notifier.check_and_notify(m.name, d["status"], d["cycle_time"], d["is_alarm"],
-                                                     self.notify_enabled, d["alarms"])
+                                                     self.notify_enabled, d["alarms"], d["program"])
                 if res == "ALARM_POPUP":
                     self._event(type="alarm", name=m.name, alarms=d["alarms"])
         elif m.want_connected and time.monotonic() - getattr(m, "_retry", 0) > RETRY_SEC:

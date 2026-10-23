@@ -17,6 +17,7 @@
           display: flex; align-items: center; justify-content: center; cursor: pointer; }
   .ibtn:hover { background: var(--btn); }
   .ibtn.on, .ibtn.on:hover { background: var(--green-bg); color: var(--green); }   /* 켜진 토글(📡·🔔)은 초록 */
+  .ibtn.off { opacity: .35; }   /* 쓸 수 없는 기능 (Tailscale 없는 PC의 📡) — 누르면 안내만 */
   .ibtn svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.7; fill: none; stroke-linecap: round; stroke-linejoin: round; }
   .divider { width: 1px; height: 18px; background: var(--line); margin: 0 6px; }
   .wbtn { width: 46px; height: 50px; border: 0; background: none; color: var(--val); display: flex; align-items: center; justify-content: center; cursor: pointer; }
@@ -307,11 +308,21 @@ function setBell(on) {
   b.innerHTML = on ? ICON.bell : ICON.bellOff; b.dataset.tip = on ? "알림: 켜짐" : "알림: 꺼짐";
 }
 $("b-bell").addEventListener("click", async () => setBell(await api().set_notify($("b-bell").dataset.state !== "true")));
+// Tailscale이 없는 PC: 📡를 흐리게 하고 누르면 안내만 (서버 시작은 파이썬 쪽에서도 거부)
+const NO_TAILSCALE = "이 PC에는 Tailscale이 설치돼 있지 않아 원격 모니터링을 쓸 수 없어요.\nTailscale을 설치·로그인하고 Funnel을 켠 뒤 다시 눌러 주세요.";
+function setTailscale(ok) {
+  const b = $("b-remote");
+  info.tailscale = ok;
+  b.classList.toggle("off", !ok);
+  if (!ok) b.dataset.tip = "원격 모니터링: 사용 불가\nTailscale 미설치";
+  else if (!b.classList.contains("on")) b.dataset.tip = "원격 모니터링: 꺼짐\n우클릭: 설정";
+}
 $("b-remote").addEventListener("click", async () => {
-  const r = await api().remote_toggle();
-  if (r.need_pin) openRemote(); else setRemote(r.running);
+  const r = await api().remote_toggle();   // 설치 여부는 누를 때마다 파이썬이 다시 확인 (나중에 설치해도 바로 풀림)
+  setTailscale(!r.no_tailscale);
+  if (r.no_tailscale) message(NO_TAILSCALE); else if (r.need_pin) openRemote(); else setRemote(r.running);
 });
-$("b-remote").addEventListener("contextmenu", e => { e.preventDefault(); openRemote(); });
+$("b-remote").addEventListener("contextmenu", e => { e.preventDefault(); info.tailscale ? openRemote() : message(NO_TAILSCALE); });
 $("b-settings").addEventListener("click", openSettings);
 $("b-compact").addEventListener("click", () => setCompact(true));
 $("b-min").addEventListener("click", () => api().minimize());
@@ -455,7 +466,7 @@ async function poll() {
 
 window.addEventListener("pywebviewready", async () => {
   info = await api().init();
-  setBell(info.notify);
+  setBell(info.notify); setTailscale(info.tailscale);
   poll();
   if (info.selftest) setTimeout(selftest, 800);
 });

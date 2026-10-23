@@ -17,6 +17,7 @@ from http.cookies import SimpleCookie
 from urllib.parse import urlsplit, parse_qs
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import webui
+import stats
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,11 @@ def local_urls(port):
         pass
     ips.discard("127.0.0.1")
     return [f"http://{ip}:{port}" for ip in sorted(ips)]
+
+
+def tailscale_installed():
+    """Tailscale이 없는 PC에서는 원격 모니터링을 막는다 — 휴대폰(Funnel)으로는 못 보고 사내망에만 열리게 되므로"""
+    return bool(shutil.which("tailscale")) or os.path.exists(TAILSCALE_EXE)
 
 
 def funnel_url():
@@ -144,15 +150,17 @@ class RemoteServer:
     FOCAS 핸들은 만든 스레드(메인)에서만 유효하므로 서버 스레드는 장비에 직접 접근하지 않고,
     메인 루프가 update_snapshot()으로 넘겨준 최신 상태와 logs/ CSV 이력만 응답한다."""
 
-    def __init__(self, port=DEFAULT_PORT, host="0.0.0.0", log_dir=None, icons=None, auth=None):
+    def __init__(self, port=DEFAULT_PORT, host="0.0.0.0", log_dir=None, icons=None, auth=None, push=None):
         self.port = port
         self.host = host
         self.log_dir = log_dir      # 가공/알람 이력 CSV 폴더 (notifier와 동일)
         self.icons = icons or {}    # {192: png bytes, 512: png bytes} 홈 화면 아이콘
         self.auth = auth or RemoteAuth()
+        self.push = push            # [v3.0] 휴대폰 푸시 구독 (webpush.PushSender)
         # 휴대폰 페이지 (web/phone.html + 공통 팔레트·도우미) — 시작할 때 한 번 만들어 둔다
         self.page = webui.page("phone.html").encode("utf-8")
         self.manifest = webui.read("manifest.webmanifest").encode("utf-8")
+        self.sw = webui.read("sw.js").encode("utf-8")   # 푸시 받는 서비스 워커
         self._httpd = None
         self._lock = threading.Lock()
         self._snapshot = {"summary": {}, "machines": []}
@@ -189,11 +197,23 @@ class RemoteServer:
                 pass   # 그 날 기록 없음
         return {"date": date, "today": today}, rows
 
+    def _order(self):
+        """설정 순서대로의 장비 이름 (통계 표시 순서)"""
+        with self._lock:
+            return [m["name"] for m in self._snapshot.get("machines", [])]
+
     def _history_json(self, query):
         data, rows = self._log_rows("history", query)
-        data["rows"] = [{"machine": r[1], "start": r[2], "end": r[3], "cycle": r[4]}
+        # [v3.0] 정지 시간·결과 열은 새 형식에만 있다 (예전 5열 행은 정지 0, 완료로)
+        data["rows"] = [{"machine": r[1], "start": r[2], "end": r[3], "cycle": r[4],
+                         "pause": r[5] if len(r) > 5 else "", "result": r[7] if len(r) > 7 else "완료"}
                         for r in reversed(rows) if len(r) >= 5]
+        data["summary"] = stats.day_detail(self.log_dir, data["date"], self._order()) if self.log_dir else []
         return data
+
+    def _stats_json(self, query):
+        days = 30 if query.get("days", ["7"])[0] == "30" else 7
+        return stats.recent(self.log_dir, days, self._order()) if self.log_dir else {"days": [], "machines": []}
 
     def _alarms_json(self, query):
         data, rows = self._log_rows("alarm", query)
@@ -217,6 +237,8 @@ class RemoteServer:
                     self._send(200, "application/manifest+json", server.manifest)
                 elif path in ("/icon-192.png", "/icon-512.png") and int(path[6:9]) in server.icons:
                     self._send(200, "image/png", server.icons[int(path[6:9])])
+                elif path == "/sw.js":
+                    self._send(200, "text/javascript; charset=utf-8", server.sw)
                 elif path.startswith("/api/") and not self._authed():
                     self._json({"error": "login"}, 401)
                 elif path == "/api/status":
@@ -225,20 +247,29 @@ class RemoteServer:
                     self._json(server._history_json(query))
                 elif path == "/api/alarms":
                     self._json(server._alarms_json(query))
+                elif path == "/api/stats":
+                    self._json(server._stats_json(query))
+                elif path == "/api/push/key" and server.push:
+                    self._json({"key": server.push.public_key})
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
 
             def do_POST(self):
-                if urlsplit(self.path).path != "/api/login":
+                # POST는 로그인과 휴대폰 알림 구독뿐 — 장비 제어(연결·설정)는 절대 HTTP로 열지 않는다 (PC 화면 js_api 전용)
+                path = urlsplit(self.path).path
+                if path not in ("/api/login", "/api/push", "/api/push/check", "/api/push/test"):
                     return self._send(404, "text/plain; charset=utf-8", b"not found")
                 length = int(self.headers.get("Content-Length") or 0)
-                if length > 1024:
+                if length > 4096:
                     return self._send(413, "text/plain; charset=utf-8", b"too large")
                 try:
-                    pin = str(json.loads(self.rfile.read(length) or b"{}").get("pin", ""))
-                except (ValueError, AttributeError):
-                    pin = ""
-                ok, left, locked = server.auth.try_login(pin)
+                    body = json.loads(self.rfile.read(length) or b"{}")
+                    body = body if isinstance(body, dict) else {}
+                except ValueError:
+                    body = {}
+                if path != "/api/login":
+                    return self._push_api(path, body)
+                ok, left, locked = server.auth.try_login(str(body.get("pin", "")))
                 if not ok:
                     return self._json({"ok": False, "left": left, "locked_sec": locked}, 429 if locked else 401)
                 # Funnel(https)로 들어온 경우에만 Secure — 사내망 http 접속에서도 로그인되도록
@@ -246,6 +277,23 @@ class RemoteServer:
                 cookie = (f"{COOKIE}={server.auth.make_token()}; Max-Age={SESSION_DAYS * 86400}; "
                           f"Path=/; HttpOnly; SameSite=Strict{secure}")
                 self._json({"ok": True}, headers=[("Set-Cookie", cookie)])
+
+            def _push_api(self, path, body):
+                """휴대폰 알림 구독 (로그인 필요). 구독 주소는 webpush가 푸시 서버 도메인만 허용"""
+                if not self._authed():
+                    return self._json({"error": "login"}, 401)
+                if not server.push:
+                    return self._json({"error": "푸시 알림을 쓸 수 없어요"}, 503)
+                if path == "/api/push":
+                    host = str(self.headers.get("Host", ""))[:100]
+                    origin = f"{self.headers.get('X-Forwarded-Proto', 'http')}://{host}"
+                    err = server.push.upsert(body.get("sub"), body, origin)
+                    return self._json({"error": err} if err else {"ok": True}, 400 if err else 200)
+                endpoint = str(body.get("endpoint", ""))
+                prefs = server.push.prefs(endpoint)
+                if path == "/api/push/test" and prefs:
+                    server.push.send("test", "🔔 CNC Watcher 테스트 알림", "이 휴대폰으로 알림이 잘 와요", endpoint=endpoint)
+                self._json({"prefs": prefs})
 
             def _authed(self):
                 c = SimpleCookie()

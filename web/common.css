@@ -4,6 +4,7 @@
           --btn:#26262C; --btn-hov:#33333A; --outline:#3A3A42; --nav:#101013; --accent:#0A84FF; --accent-hov:#0B6FD6;
           --green:#30D158; --green-bg:#0E2E1A; --red:#FF453A; --red-bg:#3A0E0C; --yellow:#FFD60A; --yellow-bg:#332B08;
           --gray:#98989D; --off:#5A5A60; --off-bg:#222226;
+          --m2:#64D2FF; --m3:#BF5AF2; --m4:#FF9F0A;   /* 통계 그래프 장비별 색 (첫 장비는 --green) */
           --alm-code:#FF6961; --alm-msg:#F2C9C6; --alm-sub:#8E5A56; --alm-line:#3A1B18;
           --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, Menlo, monospace;
           --ui: -apple-system, "Malgun Gothic", "Segoe UI", sans-serif; }

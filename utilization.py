@@ -98,12 +98,42 @@ class UtilizationTracker:
     def summary(self, name):
         """{"ratio": 0~1, "run_sec", "now_sec", "segments": [(시작초, 끝초, "RUN"|"ALARM"), …]}"""
         now_sec = max(1, _sec(datetime.datetime.now()))
-        ev = self.events.get(name, [])
-        run, segs = 0, []
-        for i, (t, st) in enumerate(ev):
-            end = ev[i + 1][0] if i + 1 < len(ev) else now_sec
-            if st in ("RUN", "ALARM") and end > t:
-                segs.append((t, end, st))
-            if st == "RUN":
-                run += max(0, end - t)
-        return {"ratio": run / now_sec, "run_sec": run, "now_sec": now_sec, "segments": segs}
+        return _summarize(self.events.get(name, []), now_sec, now_sec)
+
+
+def _summarize(ev, limit, span):
+    """상태 변화 목록 → 가동률. limit = 마지막 상태가 이어진 끝(초), span = 비율·타임라인의 분모(초)"""
+    run, segs = 0, []
+    for i, (t, st) in enumerate(ev):
+        end = min(ev[i + 1][0] if i + 1 < len(ev) else limit, limit)
+        if st in ("RUN", "ALARM") and end > t:
+            segs.append((t, end, st))
+        if st == "RUN":
+            run += max(0, end - t)
+    return {"ratio": run / span, "run_sec": run, "now_sec": span, "segments": segs}
+
+
+def day_summary(log_dir, date):
+    """[v3.0] 그날 장비별 가동률 {장비명: summary} — logs/state_<date>.csv에서 계산 (기록 없으면 {}).
+    지난날은 24시간 중 비율. 앱이 비정상 종료돼 OFFLINE 마감이 없으면 파일 마지막 수정 시각(1분 하트비트)까지만 센다."""
+    path = os.path.join(log_dir, f"state_{date}.csv")
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))[1:]
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+    except OSError:
+        return {}
+    now = datetime.datetime.now()
+    if date == now.strftime("%Y-%m-%d"):
+        limit = span = max(1, _sec(now))
+    else:
+        span = 86400
+        limit = _sec(mtime) if mtime.strftime("%Y-%m-%d") == date else span
+    events = {}
+    for row in rows:
+        try:
+            h, m, s = (int(x) for x in row[0].split(":"))
+            events.setdefault(row[1], []).append((h * 3600 + m * 60 + s, row[2]))
+        except (ValueError, IndexError):
+            continue
+    return {name: _summarize(ev, limit, span) for name, ev in events.items()}
