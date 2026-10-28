@@ -136,6 +136,15 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 - 이 PC(공장 PC)는 지금 `dist\CNC_Watcher\`의 exe를 직접 실행 중이라 빌드 전에 종료가 필요하다. 설치 마법사로 설치해서 쓰면 dist는 빌드 전용이 되어 앱을 끄지 않고 빌드할 수 있다.
 - **빌드가 끝나도 Claude가 exe를 실행하지 말 것** — 사용자에게 바로 가기로 켜고 📡를 다시 켜 달라고 한다 (29번).
 
+### 사내 배포 (회사 NAS)
+
+- 사용자가 "서버에 배포해줘"라고 하면 회사 NAS(ipTIME ipDISK, **Z: 드라이브**)의 **`Z:\VOL1\releases\watcher\`**에 설치 파일을 올리는 것이다. 같은 폴더가 사내 웹(Apache)으로 `http://192.168.0.220:8000/watcher/`에 공개된다.
+- 올리는 것: `dist\CNC_Watcher_Setup_v<버전>.exe` + `설치 방법.txt`(다른 PC 사용자용 안내문 — 처음 설치·매일 쓰기·기록 위치·📡·업데이트·지우기·안 될 때). 안내문은 NAS에만 있고 git에는 없다. 버전을 올리면 안내문 제목·파일 이름의 버전 표기도 고칠 것. 안내문은 faxit 것과 같은 형식(UTF-8 BOM 없음, CRLF).
+- 앱에 자동 업데이트가 없어서 다른 앱(wing의 `version.json`, touchpoint의 `latest.json`)과 달리 버전 파일은 두지 않는다. 다른 PC는 새 설치 마법사를 직접 실행해 업데이트.
+- 확인: NAS 파일과 dist 파일의 `Get-FileHash`가 같은지, `curl -I http://192.168.0.220:8000/watcher/<파일>`이 200인지. Z:는 네트워크 드라이브라 가상 저장소(29번)와 상관없다.
+- `releases`에는 다른 사내 앱 폴더(touchpoint·specvault·faxit·wing·pando)와 `httpd.conf`·`_logs`·`Network Trashes Folder`도 있으니 **`watcher` 밖은 건드리지 말 것**.
+- 2026-10-28 v3.0 첫 배포 (10-23 빌드본, SHA256 `BE5B0FB0…2B5033`).
+
 ## 테스트 방법
 
 - **자가 테스트**: `python main.py --selftest` (또는 exe에 같은 인자, `--tray`를 더하면 숨겨서 시작한 경우 점검). 실장비 연결 → 카드 펼치기/접기(FPS 측정) → 최소화 모드 → 설정 창 → 원격 PIN 창 → 알람 팝업(가짜) → 숨기기/트레이 열기/Alt+F4 순서로 돌고, 각 화면을 임시 폴더에 캡처(캡처 순간만 맨 위로)한 뒤 결과를 `cnc_watcher.log`에 `[자가 테스트]`로 남기고 종료한다. 실행 중인 앱과 같이 돌 수 있고(중복 실행 검사 생략), 이력·연결 상태는 임시 폴더·PIN은 메모리·토스트는 꺼짐·자동 실행 레지스트리는 안 건드림이라 실제 데이터를 건드리지 않는다. v3.0 기준 결과: 펼침 65~69fps, 장비 스레드 한 바퀴 약 32ms.
@@ -154,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 - 공장 PC에서 `dist\CNC_Watcher\CNC_Watcher.exe`를 사용자가 바탕화면 바로 가기로 실행. 기록 폴더는 실제 `%LOCALAPPDATA%\CNC Watcher`(가상 저장소 합침 완료, 29번).
 - 윈도우 자동 실행(`--tray`) 켜짐. 📡 원격은 재시작할 때마다 사용자가 직접 켠다(23번).
 - 아이폰 1대가 휴대폰 알림(알람·가공 완료)을 구독, 테스트 알림 수신 확인.
-- 다른 PC 배포용 설치 파일 `dist\CNC_Watcher_Setup_v3.0.exe`는 마지막 빌드와 같은 내용.
+- 다른 PC 배포용 설치 파일 `dist\CNC_Watcher_Setup_v3.0.exe`는 마지막 빌드와 같은 내용. 회사 NAS `Z:\VOL1\releases\watcher\`에 안내문과 함께 배포함(2026-10-28, '사내 배포' 참고).
 
 **확인 끝난 것**: 가공 이력 프로그램 단위 기록(실장비), 예전 이력 다시 묶기, 통계·그날 요약 화면, 푸시 테스트 알림(아이폰), 아이폰 앱 모드 하단바, 설치·업데이트·삭제(시험 설치), Tailscale 없는 PC 차단(흉내 시험).
 
