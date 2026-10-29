@@ -10,16 +10,20 @@ import socket
 import logging
 import tempfile
 import threading
+import subprocess
 import winsound
 from logging.handlers import RotatingFileHandler
 from PIL import Image, ImageDraw
 import pystray
 import webview
 
-VERSION = "v3.0"
+VERSION = "v3.1"
 # 자가 테스트: 실행 중인 앱과 함께 돌 수 있게 중복 실행 검사 생략, 이력은 임시 폴더, 토스트 끔
 SELFTEST = "--selftest" in sys.argv
 START_IN_TRAY = "--tray" in sys.argv   # 윈도우 자동 실행 시 '트레이로 숨겨서 시작' (startup.py가 붙임)
+# [v3.1] 앱 안 업데이트 뒤 다시 켜질 때 설치 마법사가 붙인다: 업데이트 전에 📡가 켜져 있었으면 --remote
+UPDATED = "--updated" in sys.argv
+START_REMOTE = "--remote" in sys.argv
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -72,6 +76,7 @@ from poller import Poller                                                    # n
 import webui                                                                 # noqa: E402
 import startup                                                               # noqa: E402
 from webpush import PushSender                                               # noqa: E402
+import updater                                                               # noqa: E402
 
 WIDTH, COMPACT_WIDTH = 640, 240
 _user32 = ctypes.WinDLL("user32")
@@ -192,7 +197,8 @@ class Api:
                 "tailscale": tailscale_installed()}
 
     def status(self):
-        return dict(self._app.poller.snapshot(), events=self._app.poller.pop_events())
+        a = self._app
+        return dict(a.poller.snapshot(), events=a.poller.pop_events(), update=a.updater.public())
 
     def connect(self, ip):
         self._app.poller.request("connect", ip)
@@ -240,6 +246,17 @@ class Api:
     def remote_logout_all(self):
         self._app.auth.logout_all()
         return {"ok": True}
+
+    # ── 새 버전 (updater.py) ──────────────────────────────
+    def update_start(self, now):
+        """now=False: 가공 중인 장비가 있으면 끝날 때까지 기다렸다가 업데이트"""
+        return self._app.updater.request(bool(now))
+
+    def update_cancel(self):
+        self._app.updater.cancel()
+
+    def update_dismiss(self):
+        self._app.updater.dismiss()   # 띠만 숨김 (다음에 켤 때까지), 트레이 메뉴의 '업데이트'는 그대로
 
     # ── 설정 창 (장비 목록 + 일반) ─────────────────────────
     def get_settings(self):
@@ -353,6 +370,11 @@ class App:
         self.poller = Poller(load_configs(), DLL_PATH, self.notifier, self.util, self.remote,
                              state_path=os.path.join(self.data_dir, CONN_FILE))
         self.poller.notify_enabled = not SELFTEST
+        # [v3.1] 새 버전 확인 — 설치 마법사로 설치한 exe만 (dist 빌드 폴더·python main.py·자가 테스트는 안 함)
+        self.updater = updater.Updater(VERSION, enabled=updater.installed(BASE_DIR) and not SELFTEST)
+        self.updater.busy = self.poller.busy_names
+        self.updater.on_found = self._update_found
+        self.updater.on_ready = self._install_update
         if not SELFTEST:
             try:
                 startup.follow_current_exe()
@@ -394,8 +416,11 @@ class App:
         except Exception:
             img = draw_watcher_icon(64)
 
+        u = self.updater
         menu = (pystray.MenuItem('열기', lambda icon, item: self.show_window(), default=True),
                 pystray.MenuItem('기록 폴더 열기', lambda icon, item: os.startfile(self.data_dir)),   # 가공·알람 이력 CSV (엑셀로 열기)
+                pystray.MenuItem(lambda item: f"업데이트 ({u.info['version']})" if u.info else "업데이트",
+                                 lambda icon, item: self._open_update(), visible=lambda item: u.info is not None),
                 pystray.MenuItem('종료', lambda icon, item: self.quit()))
         self.tray = pystray.Icon("CNC Watcher", img, "CNC Watcher", menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
@@ -404,6 +429,36 @@ class App:
         self.window.show()
         self.window.restore()
 
+    # ── 새 버전 (updater 스레드에서 불림) ─────────────────────
+    def _update_found(self, info):
+        """새 버전을 처음 찾았을 때: 트레이 메뉴에 '업데이트' + 토스트 한 번 (창이 트레이에 숨어 있어도 보이게)"""
+        try:
+            self.tray.update_menu()
+        except Exception as e:
+            logger.warning(f"트레이 메뉴 갱신 실패: {e}")
+        first = info["notes"][0] if info["notes"] else ""
+        self.notifier.send_toast(f"새 버전 {info['version']}이 나왔습니다",
+                                 (first + "\n" if first else "") + "창 위 파란 띠나 트레이 메뉴의 '업데이트'를 누르세요.")
+
+    def _open_update(self):
+        self.updater.open_request = True   # 화면이 다음 상태 조회 때 업데이트 창을 연다
+        self.show_window()
+
+    def _install_update(self, path):
+        """내려받은 설치 파일을 화면 없이 실행하고 앱은 정상 종료한다 (가동률 OFFLINE 마감·장비 연결 해제).
+        설치 마법사는 앱이 끝날 때까지 기다렸다 설치하고 RELAUNCH 인자로 앱을 다시 켠다 (CNC_Watcher.iss)."""
+        hidden = bool(self.hwnd) and not _user32.IsWindowVisible(ctypes.c_void_p(self.hwnd))
+        relaunch = " ".join(["--updated"] + (["--tray"] if hidden else []) + (["--remote"] if self.remote.running else []))
+        try:
+            subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1", f"/RELAUNCH={relaunch}"],
+                             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
+        except OSError as e:
+            logger.error(f"업데이트 설치 실행 실패: {e}")
+            self.updater.state, self.updater.error = "error", f"설치 마법사를 실행하지 못했습니다 ({e})"
+            return
+        logger.info(f"업데이트 설치 마법사 실행 → 종료 (다시 켤 때 인자: {relaunch})")
+        self.quit()
+
     def quit(self):
         self.quitting = True
         self.window.destroy()
@@ -411,6 +466,15 @@ class App:
     def run(self):
         self.poller.start()
         self.setup_tray()
+        self.updater.start()
+        if UPDATED:
+            logger.info(f"{VERSION}(으)로 업데이트 완료")
+        if UPDATED and not SELFTEST:
+            self.notifier.send_toast(f"CNC Watcher {VERSION}(으)로 업데이트했습니다", "장비는 저절로 다시 연결됩니다.")
+        # 📡는 재시작 때 다시 켜지 않지만(23번), 업데이트로 다시 켜질 때만은 켜져 있던 그대로 — 휴대폰 모니터링이 끊기지 않게
+        if START_REMOTE and self.auth.has_pin and tailscale_installed():
+            logger.info("업데이트 전에 켜져 있던 원격 모니터링을 다시 켬")
+            self.poller.request("remote_start")
         webview.start(private_mode=True)
         # 창이 닫히면 장비 스레드가 핸들을 정리하고(원격 서버 종료·가동률 마감 포함) 끝날 때까지 잠깐 기다림
         self.poller.request("shutdown")

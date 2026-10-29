@@ -1,10 +1,16 @@
 ﻿; [v3.0] CNC Watcher 설치 파일 (Inno Setup 6) — build.ps1이 exe 빌드 뒤 이 스크립트로 Setup exe를 만든다.
 ; 사용자 폴더에 설치(관리자 권한 불필요). 가공 이력·설정은 %LOCALAPPDATA%\CNC Watcher라 업데이트·삭제해도 남는다.
+; [v3.1] 앱 안 업데이트(updater.py)는 /VERYSILENT /UPDATE=1 /RELAUNCH="<다시 켤 때 인자>"로 실행한다:
+;   앱이 스스로 정상 종료할 때까지 기다렸다 설치하고, 자동 실행 값은 건드리지 않고, 끝나면 앱을 다시 켠다.
 #ifndef AppVersion
   #define AppVersion "v3.0"
 #endif
 #ifndef AppVersionNum
   #define AppVersionNum "3.0"
+#endif
+; 시험 빌드는 /DDistDir=<다른 폴더>로 — dist에서 실행 중인 앱을 끄지 않고 설치 파일을 만들 수 있다
+#ifndef DistDir
+  #define DistDir "dist\CNC_Watcher"
 #endif
 
 [Setup]
@@ -47,7 +53,7 @@ Name: "desktopicon"; Description: "바탕화면에 바로 가기 만들기"; Gro
 Name: "autostart"; Description: "윈도우 시작 시 자동 실행 (트레이로 숨겨서)"; GroupDescription: "추가 작업:"
 
 [Files]
-Source: "dist\CNC_Watcher\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\CNC Watcher"; Filename: "{app}\CNC_Watcher.exe"
@@ -55,10 +61,12 @@ Name: "{autodesktop}\CNC Watcher"; Filename: "{app}\CNC_Watcher.exe"; Tasks: des
 
 [Registry]
 ; 앱의 ⚙ 설정 '윈도우 시작 시 자동 실행'과 같은 값 (startup.py)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "CNC Watcher"; ValueData: """{app}\CNC_Watcher.exe"" --tray"; Tasks: autostart
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "CNC Watcher"; ValueData: """{app}\CNC_Watcher.exe"" --tray"; Tasks: autostart; Check: not IsUpdate
+; ↑ 앱 안 업데이트는 지난번 선택(UsePreviousTasks)을 따르므로, 그 뒤 ⚙ 설정에서 끈 자동 실행을 다시 켜지 않게
 
 [Run]
 Filename: "{app}\CNC_Watcher.exe"; Description: "지금 CNC Watcher 실행"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\CNC_Watcher.exe"; Parameters: "{param:RELAUNCH}"; Flags: nowait; Check: IsUpdate
 
 [Code]
 const
@@ -85,14 +93,26 @@ begin
       ShellExec('open', 'https://developer.microsoft.com/microsoft-edge/webview2/', '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
 end;
 
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
 procedure StopRunningApp;
 var
   Code: Integer;
+  Wait: String;
 begin
-  // 설치 폴더에서 실행 중인 CNC Watcher만 종료 (다른 폴더의 exe는 건드리지 않음)
+  // 설치 폴더에서 실행 중인 CNC Watcher만 종료 (다른 폴더의 exe는 건드리지 않음).
+  // 앱 안 업데이트는 앱이 스스로 정상 종료(가동 기록 마감·장비 연결 해제)하는 중이라 30초까지 기다린 뒤 남아 있으면 종료
+  if IsUpdate then
+    Wait := 'try { $p | Wait-Process -Timeout 30 -ErrorAction Stop } catch {}; '
+  else
+    Wait := '';
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-       '-NoProfile -NonInteractive -Command "Get-Process CNC_Watcher -ErrorAction SilentlyContinue | ' +
-       'Where-Object { $_.Path -like ''' + ExpandConstant('{app}') + '\*'' } | Stop-Process -Force"',
+       '-NoProfile -NonInteractive -Command "$p = @(Get-Process CNC_Watcher -ErrorAction SilentlyContinue | ' +
+       'Where-Object { $_.Path -like ''' + ExpandConstant('{app}') + '\*'' }); if ($p) { ' + Wait +
+       '$p | Stop-Process -Force -ErrorAction SilentlyContinue }"',
        '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 

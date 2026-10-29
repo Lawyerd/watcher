@@ -2,7 +2,8 @@
 
 FANUC CNC 장비(DN Solutions DVF5000/DVF6500)를 FOCAS 라이브러리로 실시간 모니터링하는 Windows 데스크톱 앱.
 퇴근 후에도 휴대폰 브라우저로 상태를 볼 수 있게 원격 모니터링(읽기 전용 웹 페이지 + PIN 로그인, Tailscale Funnel 공개)을 내장.
-현재 버전 **v3.0** (2026-10-23 마지막 빌드, `main`). Python + **pywebview(WebView2)** 화면, PyInstaller로 exe + Inno Setup 설치 파일 배포.
+현재 버전 **v3.1** (2026-10-29 빌드·회사 NAS 배포, `main`). Python + **pywebview(WebView2)** 화면, PyInstaller로 exe + Inno Setup 설치 파일 배포.
+v3.1부터 회사 NAS의 새 버전을 확인해 앱 안에서 바로 업데이트한다 (30번).
 진행 상황과 다음 할 일은 맨 아래 **'현재 상태와 다음 후보'** 참고.
 v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 초당 30장·폴링 때 끊겨서 웹 화면으로 전환, 이전 코드는 git 기록 `09b3145`).
 
@@ -14,19 +15,22 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
         ▼                                     ▼
 [PC 화면 web/desktop.html] ◀─ js_api ─▶ [main.py Api]      [remote_server.py :8765] ─▶ 휴대폰 (web/phone.html)
   (pywebview 창, 0.5초마다 status 조회)   (창 조작·설정·PIN)     (PIN 로그인, Funnel로 인터넷 공개 가능)
+
+[새 버전 스레드 updater.py] ── 회사 NAS latest.json 확인(켤 때·30분) → 띠·트레이·토스트, 업데이트 시작은 js_api·트레이에서만
 ```
 
 | 파일 | 역할 |
 |---|---|
-| `main.py` | 진입점. `App`(pywebview 창·트레이·종료 처리), `Api`(PC 화면 → 파이썬 호출 창구: 연결/해제, 알림, 원격·PIN, 설정 창(장비·자동 실행), 창 조작), 아이콘 생성, 중복 실행 방지, `--selftest`, `--tray`(숨겨서 시작) |
+| `main.py` | 진입점. `App`(pywebview 창·트레이·종료 처리), `Api`(PC 화면 → 파이썬 호출 창구: 연결/해제, 알림, 원격·PIN, 설정 창(장비·자동 실행), 창 조작), 아이콘 생성, 중복 실행 방지, `--selftest`, `--tray`(숨겨서 시작), 새 버전 연결(`update_*` API·트레이 '업데이트'·설치 실행 후 종료, `--updated`·`--remote`) |
 | `poller.py` | **장비 전용 스레드** (`Poller`). FOCAS 전부 + `notifier`·`utilization` 호출 + 스냅샷 생성 + 원격 서버 시작/정지 + 연결 상태 기억(`connections.json`). 화면은 `request()`로 명령만 넣는다 |
-| `web/desktop.html` | PC 화면 (HTML/CSS/JS 한 장). 헤더(📡⚙🔔 최소화 모드 — ✕), 장비 카드, 알람 목록, 부하·가동률 펼침 패널(CSS 전환), 설정 창(장비 + 일반: 자동 실행)·원격 PIN 창·알람 팝업(모달), 최소화 모드, 툴팁 |
+| `web/desktop.html` | PC 화면 (HTML/CSS/JS 한 장). 헤더(📡⚙🔔 최소화 모드 — ✕), 장비 카드, 알람 목록, 부하·가동률 펼침 패널(CSS 전환), 설정 창(장비 + 일반: 자동 실행)·원격 PIN 창·알람 팝업(모달), 새 버전 띠(헤더 아래)·업데이트 창, 최소화 모드, 툴팁 |
 | `web/phone.html` | 휴대폰 페이지 (숫자 키패드 PIN 로그인 → 가동/정지/알람 타일 + 현황/가공 이력/알람 이력/통계 탭, 장비를 누르면 부하·가동률, 현황 탭 아래 '휴대폰 알림' 카드, 가공 이력 탭 맨 위 '그날 요약'). `manifest.webmanifest`·`sw.js`(푸시 받는 서비스 워커)와 함께 원격 서버가 응답 |
 | `web/common.css`, `web/common.js` | 두 화면 공통: **다크 팔레트(`:root` 변수)**, 상태 색 `C`, `esc`, 부하 막대 색·폭, 가동률 문구·타임라인 |
 | `webui.py` | `web/` 파일 읽기. 각 화면의 `/*@COMMON_CSS@*/`·`/*@COMMON_JS@*/`(+ PC는 `/*@FONTS@*/`) 자리에 공통 파일을 끼워 넣는다 |
 | `startup.py` | 윈도우 시작 시 자동 실행 (HKCU `Run` 레지스트리, exe일 때만) |
-| `build.ps1`, `CNC_Watcher.spec` | 빌드 한 번에: exe(PyInstaller) + 자산 복사 + 설치 파일(Inno Setup). spec은 git에 포함 |
-| `installer/CNC_Watcher.iss`, `installer/images.py` | 설치 마법사 스크립트(사용자 폴더 설치·업데이트·삭제), 마법사 그림 생성 |
+| `updater.py` | 새 버전 확인·앱 안 업데이트 (`Updater` 스레드). 회사 NAS `latest.json` 확인 → 설치 파일 내려받기·해시 확인 → main이 화면 없이 설치 실행 (30번) |
+| `build.ps1`, `CNC_Watcher.spec` | 빌드 한 번에: exe(PyInstaller) + 자산 복사 + 설치 파일(Inno Setup), `-Publish`면 회사 NAS 배포(설치 파일 + `latest.json`)까지. spec은 git에 포함 |
+| `installer/CNC_Watcher.iss`, `installer/images.py` | 설치 마법사 스크립트(사용자 폴더 설치·업데이트·삭제, 앱 안 업데이트용 `/UPDATE=1` 모드), 마법사 그림 생성 |
 | `fanuc_logic.py` | FOCAS 통신 (`FanucMachine`). 상태/사이클타임(파라미터 6757·6758)/공구번호(PMC D0450·D0452)/알람/스핀들·축 부하(`cnc_rdspmeter`·`cnc_rdsvmeter`, 회전수 `cnc_acts`)/실행 프로그램명(`cnc_exeprgname`, 선택 없음·MDI는 "O0"→None) 읽기 |
 | `notifier.py` | 상태 전이 감지 → winotify 토스트·휴대폰 푸시 + `logs/history_YYYY-MM-DD.csv` 가공 이력(**프로그램 한 번 = 한 줄**, 25번) + `logs/alarm_YYYY-MM-DD.csv` 알람 발생/해제 이력 기록 |
 | `webpush.py` | 휴대폰 푸시 (`PushSender`). Web Push(VAPID + aes128gcm)를 `cryptography`로 직접 구현, 구독은 `push.json` (26번) |
@@ -72,6 +76,7 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
 21. **자동 실행은 HKCU `Run` 값 하나**(`CNC Watcher` = `"exe 경로" [--tray]`). 관리자 권한 불필요, 윈도우 **로그인 후** 실행된다. '트레이로 숨겨서 시작'은 `--tray` 인자로 기억(별도 파일 없음). exe 위치가 바뀔 수 있으므로(예전엔 버전마다 dist 폴더가 달랐고, 지금도 dist 실행 ↔ 설치본 실행으로 바뀔 수 있음), 켜져 있으면 실행할 때마다 지금 exe로 갱신(`follow_current_exe`) — 예전 빌드(특히 PIN 이전 빌드, 20번)가 자동 실행되지 않게. Claude 셸에서 켠 앱이 바꾼 값은 가상 레지스트리에만 들어간다(29번). `python main.py`에서는 끌 수도 켤 수도 없다(스위치 흐림). `--selftest`는 레지스트리를 건드리지 않는다.
 22. **자동 실행 때 작업 폴더는 system32** → 로그 등 모든 경로는 `BASE_DIR`(exe 옆)·`DATA_DIR`(기록 폴더) 기준 절대 경로로 쓸 것 (상대 경로 `cnc_watcher.log`였다가 고침).
 23. **상태 기억은 장비 연결만** (사용자 선택 — 📡 원격·🔔 알림·창 위치는 기억하지 않음, 📡는 재시작 후 다시 눌러야 함). `want_connected`가 바뀔 때마다 `connections.json`에 저장하고, 시작 시 그 장비들을 바로 connect하지 않고 **자동 재연결 대상(`want_connected=True`)으로 둔다** — 부팅 직후 장비가 아직 꺼져 있어도 오류 팝업 없이 10초마다 다시 붙는다. 종료(shutdown) 때 해제는 저장하지 않는다.
+    - 예외: **앱 안 업데이트로 다시 켜질 때만** 📡가 켜져 있었으면 다시 켠다(`--remote`, 30번) — 업데이트할 때마다 휴대폰 모니터링이 조용히 끊기지 않게. 재부팅·직접 실행 때는 그대로 안 켠다.
 24. `hidden=True`(트레이로 시작)여도 WebView2 화면(JS)은 돈다 — 상태 조회·알람 팝업(`attention()`) 정상. 숨김 중엔 타이머가 약 1초로 느려진다(실측).
 
 ### 가공 이력·푸시·통계
@@ -97,7 +102,18 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
     - **실사용 exe는 Claude 셸에서 띄우지 말 것** — 빌드 후 실행은 사용자가 바로 가기·탐색기로 하거나, 패키지 밖 확인이 들어간 스크립트(`기록합치기\`의 방식: 실제 폴더에 쓴 파일이 가상 경로에 나타나면 안쪽으로 보고 중단)를 사용자가 더블클릭하게 한다. 실제 기록 폴더를 고치는 작업도 마찬가지. 실행 중인 앱을 끄는 것(`Stop-Process`)은 Claude 셸에서 해도 된다.
     - 2026-10-23 `기록합치기\기록합치기.bat`을 사용자가 실행해 가상 저장소 기록을 실제 폴더로 합쳤다(예전 푸시 서명 키 복원, 가상 저장소는 `백업\claude_가상저장소_*.zip`으로 압축 후 삭제, 실제 자동 실행 값이 없으면 켬). 이 폴더는 git에서 빼고 로컬에만 남겼다.
     - 진단: 실행 중인 앱이 어떤 파일을 쥐고 있는지는 Restart Manager(`RmGetList`)로 확인할 수 있다. 실제 앱이 쓴 파일은 가상 쪽에 같은 이름이 없을 때만 Claude에서 보인다.
+    - **2026-10-29에는 가상화가 일어나지 않았다** — 셸에서 실제 기록 폴더에 쓴 시험 파일이 가상 경로에 안 생겼고, 셸에서 띄운 자가 테스트 로그도 실제 `cnc_watcher.log`에 쌓였다. Claude 앱 버전에 따라 달라질 수 있으니 기록 폴더·레지스트리를 건드리기 전에 시험 파일로 먼저 확인할 것. 실사용 exe를 셸에서 띄우지 않는 원칙은 그대로(Claude 앱이 닫히면 같이 꺼질 수 있음).
     - 휴대폰 페이지는 구독의 서명 키가 PC의 지금 키와 다르면(또는 PC가 그 휴대폰을 모르면) 예전 구독을 지우고 다시 켜 달라고 안내한다. 푸시 전송 성공·대상 없음도 로그에 남긴다.
+
+### 새 버전·앱 안 업데이트 (v3.1)
+30. **회사 NAS의 `latest.json`을 보고 앱 안에서 업데이트한다** (`updater.py`, Faxit과 같은 방식 — 사용자가 시안 A 띠 + B 업데이트 창을 고름, 2026-10-29).
+    - 확인: 켠 지 20초 뒤와 30분마다 `http://192.168.0.220:8000/watcher/latest.json`(`LATEST_URL`, 프록시 우회). 사내망 밖이면 조용히 넘어가고 같은 실패는 로그에 한 번만. **설치 마법사로 설치한 exe(옆에 `unins*.exe`)만** 확인한다 — dist 빌드 폴더·`python main.py`·자가 테스트는 안 함.
+    - `latest.json`: `version`(`v3.1`), `file`(설치 파일 이름 — 경로가 섞이면 무시), `sha256`, `size`, `date`, `notes`(바뀐 점 목록). `build.ps1 -Publish`가 설치 파일을 올리고 해시를 확인한 **뒤에** 쓴다.
+    - 알림: 헤더 아래 파란 띠([업데이트] → 업데이트 창, [나중에] → 다음에 켤 때까지 숨김), 토스트 한 번(🔔와 무관), 트레이 메뉴 '업데이트 (vX)'(누르면 창을 띄우고 업데이트 창을 연다). 최소화 모드에서는 띠를 숨긴다.
+    - **가공 중이면** 업데이트 창에 경고 + [가공 끝나면 업데이트](기본). 기준은 `Poller.busy_names()` — 연결된 장비 중 notifier의 가공(job)이 아직 리셋 전인 것. 가공 중에 앱이 꺼지면 그 가공 한 줄의 시작 시각이 다시 켠 시각으로 틀어진다(25번).
+    - 업데이트: `%TEMP%\CNCWatcherUpdate`에 받아 해시 확인 → 설치 파일을 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1 /RELAUNCH="--updated [--tray] [--remote]"`로 띄우고 앱은 정상 종료(가동률 OFFLINE 마감·장비 해제). 설치 마법사는 `/UPDATE=1`이면 설치 폴더의 앱이 **스스로 꺼질 때까지 30초 기다린 뒤** 남은 것만 종료하고, 설치 후 `{param:RELAUNCH}`로 다시 켠다. 업데이트 때는 자동 실행 값을 쓰지 않는다(`Check: not IsUpdate` — ⚙에서 끈 자동 실행이 다시 켜지지 않게).
+    - 파이썬이 받은 파일엔 '인터넷에서 받은 파일' 표시가 없어 'Windows의 PC 보호' 창이 안 뜬다. 업데이트 시작은 PC 화면(js_api)·트레이에서만 — 휴대폰(원격 서버)에는 넣지 않는다(11번). NAS `releases`에 쓸 수 있는 사람은 모든 PC에 깔릴 설치 파일을 바꿀 수 있다(Faxit·WinG와 같은 신뢰 수준).
+    - **v3.0에는 이 기능이 없다** — v3.0을 쓰는 PC는 v3.1 설치 마법사를 한 번 직접 실행해야 한다.
 
 ## 원격 접속 (휴대폰) 운영
 
@@ -114,6 +130,12 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
+```bash
+powershell -ExecutionPolicy Bypass -File build.ps1 -Publish -Notes "바뀐 점1;바뀐 점2"
+```
+
+- 위는 빌드만, 아래는 빌드 + 회사 NAS 배포('사내 배포' 참고). 이미 만든 설치 파일을 올리기만 할 때는 `-PublishOnly`.
+
 - `build.ps1`이 하는 일: `pyinstaller CNC_Watcher.spec --noconfirm` → `dll/ icons/ fonts/ machines.json`을 `dist\CNC_Watcher\`에 복사 → `installer/images.py`(마법사 그림) → Inno Setup으로 **`dist\CNC_Watcher_Setup_v<버전>.exe`**. 버전은 `main.py`의 `VERSION`에서 읽는다.
 - **설치 마법사** (`installer/CNC_Watcher.iss`, Inno Setup 6 — 이 PC에는 `%LOCALAPPDATA%\Programs\Inno Setup 6`에 설치돼 있음):
   - 사용자 폴더(`%LOCALAPPDATA%\Programs\CNC Watcher`)에 설치, 관리자 권한 불필요. 시작 메뉴 + (기본 체크) 바탕화면 바로 가기·윈도우 시작 시 자동 실행.
@@ -122,6 +144,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
   - WebView2 런타임이 없으면(윈도우 10) 다운로드 페이지 안내만 하고 설치는 계속.
   - `AppId` GUID는 고정 — 바꾸면 업데이트가 아니라 별도 프로그램으로 설치된다. `.iss`·`build.ps1`은 **UTF-8 BOM**으로 저장할 것(없으면 한글이 깨짐).
   - 서명이 없어 처음 실행 때 'Windows의 PC 보호' 창이 뜬다 (추가 정보 → 실행).
+  - 앱 안 업데이트용 `/UPDATE=1 /RELAUNCH=...` 모드(30번). 시험 빌드는 `ISCC /DDistDir=<다른 폴더> /O<출력 폴더>`로 — dist에서 실행 중인 앱을 끄지 않고 설치 파일을 만들 수 있다.
 - spec이 없으면 아래로 만든다. **pywebview가 쓰지도 않는 Qt(PySide6) 화면 엔진을 끌고 와 644MB가 되므로 제외 목록이 필수** (빼면 약 63MB).
   ```bash
   pyinstaller --noconfirm --windowed --name CNC_Watcher --icon icons/watcher_icon.ico --add-data "web;web" --exclude-module PySide6 --exclude-module shiboken6 --exclude-module PyQt5 --exclude-module PyQt6 --exclude-module qtpy --exclude-module webview.platforms.qt --exclude-module webview.platforms.gtk --exclude-module webview.platforms.cef --exclude-module webview.platforms.cocoa --exclude-module webview.platforms.android --exclude-module numpy --exclude-module cv2 --exclude-module customtkinter main.py
@@ -133,17 +156,18 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 - 빌드 전 실행 중인 exe를 종료할 것 (dll 잠김으로 빌드 실패).
 - `dist\CNC_Watcher\` 폴더 전체가 완전한 배포본 — 공장 PC에 폴더째 복사하면 끝 (기록은 그 PC의 기록 폴더에 새로 생김).
 - `CNC_Watcher.spec`은 git에 포함(다른 `*.spec`은 무시). 버전을 올릴 때는 `main.py`의 `VERSION`만 바꾸면 된다.
-- 이 PC(공장 PC)는 지금 `dist\CNC_Watcher\`의 exe를 직접 실행 중이라 빌드 전에 종료가 필요하다. 설치 마법사로 설치해서 쓰면 dist는 빌드 전용이 되어 앱을 끄지 않고 빌드할 수 있다.
+- 이 PC(공장 PC)는 2026-10-29까지 `dist\CNC_Watcher\`의 exe를 직접 실행해서 빌드 전에 종료가 필요했다. v3.1부터는 NAS의 설치 마법사로 설치해서 쓰기로 함 — 그러면 dist는 빌드 전용이 되어 앱을 끄지 않고 빌드할 수 있고, 이 PC도 앱 안 업데이트를 받는다(dist 실행본은 새 버전 확인을 안 함).
 - **빌드가 끝나도 Claude가 exe를 실행하지 말 것** — 사용자에게 바로 가기로 켜고 📡를 다시 켜 달라고 한다 (29번).
 
 ### 사내 배포 (회사 NAS)
 
 - 사용자가 "서버에 배포해줘"라고 하면 회사 NAS(ipTIME ipDISK, **Z: 드라이브**)의 **`Z:\VOL1\releases\watcher\`**에 설치 파일을 올리는 것이다. 같은 폴더가 사내 웹(Apache)으로 `http://192.168.0.220:8000/watcher/`에 공개된다.
-- 올리는 것: `dist\CNC_Watcher_Setup_v<버전>.exe` + `설치 방법.txt`(다른 PC 사용자용 안내문 — 처음 설치·매일 쓰기·기록 위치·📡·업데이트·지우기·안 될 때). 안내문은 NAS에만 있고 git에는 없다. 버전을 올리면 안내문 제목·파일 이름의 버전 표기도 고칠 것. 안내문은 faxit 것과 같은 형식(UTF-8 BOM 없음, CRLF).
-- 앱에 자동 업데이트가 없어서 다른 앱(wing의 `version.json`, touchpoint의 `latest.json`)과 달리 버전 파일은 두지 않는다. 다른 PC는 새 설치 마법사를 직접 실행해 업데이트.
-- 확인: NAS 파일과 dist 파일의 `Get-FileHash`가 같은지, `curl -I http://192.168.0.220:8000/watcher/<파일>`이 200인지. Z:는 네트워크 드라이브라 가상 저장소(29번)와 상관없다.
+- **`build.ps1 -Publish -Notes "바뀐 점1;바뀐 점2"`가 전부 한다**: 설치 파일 복사 → NAS 쪽 해시 비교 → `latest.json` 쓰기(바뀐 점은 `;`로 나눔, 앱의 띠·업데이트 창에 나옴) → 사내 웹에서 다시 읽어 버전·해시 확인. 켜져 있는 v3.1 이상 앱은 30분 안에 알림을 띄운다(30번).
+- 함께 두는 `설치 방법.txt`(다른 PC 사용자용 안내문 — 처음 설치·매일 쓰기·기록 위치·📡·새 버전·지우기·안 될 때)는 NAS에만 있고 git에는 없다. v3.1부터 버전 표기 없이 써서 매번 고칠 필요는 없고, 동작이 바뀌면 고친다. faxit 것과 같은 형식(UTF-8 BOM 없음, CRLF).
+- 예전 버전 설치 파일은 지우지 않아도 된다(앱은 `latest.json`만 본다). Z:는 네트워크 드라이브라 가상 저장소(29번)와 상관없다.
 - `releases`에는 다른 사내 앱 폴더(touchpoint·specvault·faxit·wing·pando)와 `httpd.conf`·`_logs`·`Network Trashes Folder`도 있으니 **`watcher` 밖은 건드리지 말 것**.
 - 2026-10-28 v3.0 첫 배포 (10-23 빌드본, SHA256 `BE5B0FB0…2B5033`).
+- 2026-10-29 v3.1 배포 (`latest.json` 첫 게시, SHA256 `25988988…7e1ccd`, 23,762,137B).
 
 ## 테스트 방법
 
@@ -153,24 +177,30 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 - 자동 실행 함수 검증은 `startup.RUN_KEY`를 테스트용 키(예: `Software\CNCWatcherTest\Run`)로 바꿔서 하고 끝나면 지울 것 — 진짜 `Run` 키는 사용자가 설정 창에서만 바꾼다.
 - 원격 서버 검증: `RemoteServer(host="127.0.0.1", port=87xx, auth=RemoteAuth())`처럼 **localhost + 메모리 전용 인증**으로 띄울 것 (0.0.0.0 바인딩은 방화벽 팝업, 기본 경로는 `remote.json` 생성). `Poller`에 그 서버를 넣고 `request("remote_start")`하면 실장비 스냅샷까지 확인된다. 휴대폰 화면은 브라우저 모바일 뷰포트(375×812)로 확인.
 - 설치 파일 검증: `CNC_Watcher_Setup_*.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR=<임시 폴더> /TASKS=`로 설치 → 설치된 exe를 `--selftest`로 실행 → `<임시 폴더>\unins000.exe /VERYSILENT`로 삭제. `/TASKS=autostart`로 시험하면 진짜 자동 실행 값을 덮어쓰므로 미리 값을 적어두고 복원할 것.
+- **새 버전·업데이트 검증** (30번):
+  - 확인 기능: `updater.Updater("v3.1", url=<localhost 서버의 latest.json>)`로 `check()`·`request(False)`(가공 중 → waiting)·내려받기·해시 불일치를 시험한다. 실제 NAS는 `Updater("v3.0").check()`로 읽혀야 한다.
+  - 화면: 자가 테스트가 가짜 상태(v9.9)로 띠·업데이트 창(가공 중)·내려받는 중을 캡처한다.
+  - 설치 마법사 업데이트 모드: `ISCC /DDistDir=` 시험 빌드를 임시 폴더에 설치 → 설치본을 `--selftest`로 켜 둔 채 앱과 같은 인자(`/UPDATE=1 "/RELAUNCH=--updated --selftest"`, `/DIR` 없이)로 실행 → 처음 앱 종료 코드 0(스스로 종료)·설치 후 다시 켜짐(로그 `업데이트 완료`)·삭제 후 흔적 없음 확인 (2026-10-29 통과).
+  - 진짜 앱 안 업데이트(설치본 + 실제 NAS)는 다음 버전을 배포할 때 처음 확인할 수 있다.
 - 실행 중인 exe/`python main.py`가 있으면 새로 띄운 앱은 "이미 실행 중"으로 멈춘다 (`--selftest` 제외).
-- **Claude 셸에서 exe를 띄워 실사용하지 말 것** (29번). 자가 테스트는 괜찮지만 그 로그는 가상 저장소의 `cnc_watcher.log`에 쌓인다.
+- **Claude 셸에서 exe를 띄워 실사용하지 말 것** (29번). 자가 테스트는 괜찮다(가상화가 일어나면 그 로그는 가상 저장소의 `cnc_watcher.log`에, 2026-10-29에는 실제 로그에 쌓였다).
 - 콘솔 출력은 cp949라 한글이 깨진다 — 결과는 `cnc_watcher.log`(UTF-8)로 볼 것. exe의 로그는 `%LOCALAPPDATA%\CNC Watcher\cnc_watcher.log`, `python main.py`·자가 테스트는 프로젝트 폴더의 것.
 
-## 현재 상태와 다음 후보 (2026-10-23 기준)
+## 현재 상태와 다음 후보 (2026-10-29 기준)
 
 **운영 중**
-- 공장 PC에서 `dist\CNC_Watcher\CNC_Watcher.exe`를 사용자가 바탕화면 바로 가기로 실행. 기록 폴더는 실제 `%LOCALAPPDATA%\CNC Watcher`(가상 저장소 합침 완료, 29번).
+- 공장 PC는 2026-10-29 v3.1 빌드를 위해 dist 실행본을 껐고, **NAS의 v3.1 설치 마법사로 설치본으로 바꾸기로 함**(사용자가 직접 설치 — 그 뒤로 이 PC도 앱 안 업데이트를 받는다). 기록 폴더는 실제 `%LOCALAPPDATA%\CNC Watcher`(가상 저장소 합침 완료, 29번). 바탕화면 바로 가기·자동 실행 값은 설치 마법사가 설치본으로 바꾼다.
 - 윈도우 자동 실행(`--tray`) 켜짐. 📡 원격은 재시작할 때마다 사용자가 직접 켠다(23번).
 - 아이폰 1대가 휴대폰 알림(알람·가공 완료)을 구독, 테스트 알림 수신 확인.
-- 다른 PC 배포용 설치 파일 `dist\CNC_Watcher_Setup_v3.0.exe`는 마지막 빌드와 같은 내용. 회사 NAS `Z:\VOL1\releases\watcher\`에 안내문과 함께 배포함(2026-10-28, '사내 배포' 참고).
+- 회사 NAS `Z:\VOL1\releases\watcher\`에 v3.0(10-28)·v3.1(10-29) 설치 파일 + `latest.json`(v3.1) + `설치 방법.txt` 배포. `dist\CNC_Watcher_Setup_v3.1.exe`가 마지막 빌드.
 
-**확인 끝난 것**: 가공 이력 프로그램 단위 기록(실장비), 예전 이력 다시 묶기, 통계·그날 요약 화면, 푸시 테스트 알림(아이폰), 아이폰 앱 모드 하단바, 설치·업데이트·삭제(시험 설치), Tailscale 없는 PC 차단(흉내 시험).
+**확인 끝난 것**: 가공 이력 프로그램 단위 기록(실장비), 예전 이력 다시 묶기, 통계·그날 요약 화면, 푸시 테스트 알림(아이폰), 아이폰 앱 모드 하단바, 설치·업데이트·삭제(시험 설치), Tailscale 없는 PC 차단(흉내 시험), 새 버전 확인·업데이트 창·설치 마법사 업데이트 모드(시험 서버·임시 설치본, 30번).
 
 **아직 실사용으로 확인 못 한 것** (사용자 확인 필요)
 - 실제 가공이 끝났을 때·알람이 났을 때 오는 푸시 (테스트 알림만 확인됨). 안 오면 실제 기록 폴더 `cnc_watcher.log`의 `푸시 전송`/`푸시 보낼 휴대폰 없음`/`푸시 전송 실패` 줄부터 볼 것.
 - 재부팅 후 자동 실행(실제 레지스트리), 절전 복귀 후 자동 재연결(v3.0 장비 스레드 구조에서).
 - 다른 PC에서 설치 마법사를 직접 눌러 설치.
+- **진짜 앱 안 업데이트**: 설치본 v3.1에서 다음 버전(NAS)을 띠로 받아 업데이트 → 다시 켜짐·📡 복원·트레이에 숨긴 채 다시 켜짐. 다음 버전 배포 때 확인.
 
 **다음 후보** (사용자와 이야기만 함, 착수 전)
 - 완료 예상 시각: 프로그램별 평균 사이클 타임으로 "약 14:35 완료" 표시 (프로그램명은 v3.0 이력부터 기록됨, 그 전 이력엔 없음).

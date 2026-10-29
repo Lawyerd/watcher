@@ -94,6 +94,13 @@ class Poller(threading.Thread):
         with self._lock:
             return self._snap
 
+    def busy_names(self):
+        """[v3.1] 프로그램이 아직 끝나지 않은(리셋 전) 연결된 장비 — '가공 끝나면 업데이트'가 기다린다.
+        가공 중에 앱이 꺼지면 그 가공 한 줄의 시작 시각이 다시 켠 시각으로 틀어지기 때문."""
+        states = self.notifier.last_states
+        return [m["name"] for m in self.snapshot()["machines"]
+                if m["connected"] and (states.get(m["name"]) or {}).get("job")]
+
     def pop_events(self):
         with self._lock:
             events, self._events = self._events, []
