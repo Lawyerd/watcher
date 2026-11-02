@@ -34,6 +34,13 @@
   .tile { border-radius: 14px; padding: 12px 0 10px; text-align: center; }
   .tile b { display: block; font: 500 28px var(--mono); }
   .tile span { font-size: 12px; }
+  /* 값이 오기 전의 화면 틀 — 실제 타일·장비 줄과 같은 자리에 그린다 */
+  .sk { display: inline-block; vertical-align: middle; background: var(--btn); border-radius: 4px; animation: sk 1.2s ease-in-out infinite; }
+  @keyframes sk { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+  .still .sk { animation: none; }
+  .offbox { background: #2A1513; color: var(--alm-msg); border-radius: 14px; margin-top: 12px; padding: 16px 14px; text-align: center; font-size: 14px; line-height: 1.5; }
+  .offbox small { display: block; font-size: 12px; margin-top: 2px; }
+  .offbox button { margin-top: 10px; background: var(--btn); color: var(--val); border: 0; border-radius: 10px; height: 34px; padding: 0 16px; font-size: 13px; }
   .offline { font-size: 12px; color: var(--sub); text-align: center; margin-top: 8px; }
   .list { background: var(--card); border-radius: 14px; margin-top: 12px; overflow: hidden; }
   .m, .h { padding: 12px 14px; border-top: 1px solid var(--line); }
@@ -157,7 +164,19 @@
   </div>
 </section>
 <div class="top"><b id="title">CNC Watcher</b><span id="top-st">연결 중…</span></div>
-<main id="view"><div class="empty">불러오는 중…</div></main>
+<main id="view">
+  <div class="tiles">
+    <div class="tile" style="background:var(--card);color:var(--sub)"><b><i class="sk" style="width:24px;height:24px"></i>&#8203;</b><span>가동</span></div>
+    <div class="tile" style="background:var(--card);color:var(--sub)"><b><i class="sk" style="width:24px;height:24px"></i>&#8203;</b><span>정지</span></div>
+    <div class="tile" style="background:var(--card);color:var(--sub)"><b><i class="sk" style="width:24px;height:24px"></i>&#8203;</b><span>알람</span></div>
+  </div>
+  <div class="list">
+    <div class="m"><div class="row"><div class="who"><span class="bar" style="background:var(--btn)"></span><div><div class="name"><i class="sk" style="width:84px;height:15px"></i>&#8203;</div><div class="st"><i class="sk" style="width:64px;height:11px"></i>&#8203;</div></div></div>
+      <div class="right"><div class="prg"><i class="sk" style="width:36px;height:9px"></i>&#8203;</div><div class="cyc"><i class="sk" style="width:84px;height:16px"></i>&#8203;</div><div class="meta"><i class="sk" style="width:52px;height:11px"></i>&#8203;</div></div></div></div>
+    <div class="m"><div class="row"><div class="who"><span class="bar" style="background:var(--btn)"></span><div><div class="name"><i class="sk" style="width:84px;height:15px"></i>&#8203;</div><div class="st"><i class="sk" style="width:64px;height:11px"></i>&#8203;</div></div></div>
+      <div class="right"><div class="prg"><i class="sk" style="width:36px;height:9px"></i>&#8203;</div><div class="cyc"><i class="sk" style="width:84px;height:16px"></i>&#8203;</div><div class="meta"><i class="sk" style="width:52px;height:11px"></i>&#8203;</div></div></div></div>
+  </div>
+</main>
 <nav>
   <button class="on" data-tab="now"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>현황</button>
   <button data-tab="hist"><svg viewBox="0 0 24 24"><path d="M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17M11 6h9M11 12h9M11 18h9"/></svg>가공 이력</button>
@@ -169,6 +188,12 @@
 const LABEL = { RUN:"가공 중", HOLD:"일시정지", IDLE:"정지", ALARM:"알람", OFFLINE:"연결 끊김" };
 let tab = "now", last = null, log = null, date = null, today = null, ticks = 0;
 const expanded = new Set();
+// 첫 값이 오기 전의 현황 탭: 화면 틀(HTML에 그려 둔 것), 연결이 안 되면 안내 + 다시 시도
+const SKELETON = $("view").innerHTML;
+const OFFLINE = `<div class="still">${$("view").querySelector(".tiles").outerHTML}</div>
+  <div class="offbox">PC에 연결할 수 없어요<small>PC에서 원격 모니터링이 켜져 있는지 확인해 주세요</small><button data-retry>다시 시도</button></div>`;
+const STATUS_TIMEOUT_MS = 30000;   // Funnel 첫 연결은 15초까지도 걸린다 (실측)
+let polling = false, offline = false;
 
 function ago(s) {
   if (s < 60) return "방금";
@@ -238,7 +263,7 @@ function loadsHtml(m) {
 }
 
 function renderNow() {
-  if (!last) return;
+  if (!last) { $("view").innerHTML = offline ? OFFLINE : SKELETON; return; }
   const ms = last.machines, n = sts => ms.filter(m => sts.includes(m.state)).length;
   const off = n(["OFFLINE"]);
   $("view").innerHTML = `<div class="tiles">${tile(n(["RUN"]), "가동", "RUN")}${tile(n(["HOLD", "IDLE"]), "정지", "IDLE")}${tile(n(["ALARM"]), "알람", "ALARM")}</div>`
@@ -461,10 +486,11 @@ $("view").addEventListener("click", e => {
   const t = sel => e.target.closest(sel);
   if (t("[data-day]")) return shiftDate(+t("[data-day]").dataset.day);
   if (t(".chip")) return togglePush(t(".chip").dataset.name, t(".chip").dataset.kind);
+  if (t("[data-retry]")) { offline = false; renderNow(); return tick(); }
   if (t("[data-ptest]")) return testPush();
   if (t("[data-days]")) { statDays = +t("[data-days]").dataset.days; return loadStats(); }
   if (t("[data-date]") && tab === "stats") { date = t("[data-date]").dataset.date; return setTab("hist"); }
-  const row = t(".m");
+  const row = t(".m[data-name]");
   if (row && tab === "now") {
     const n = row.dataset.name;
     expanded.has(n) ? expanded.delete(n) : expanded.add(n);
@@ -556,17 +582,29 @@ document.addEventListener("keydown", e => {
 });
 
 async function tick() {
-  if (locked()) return;
+  if (locked() || polling) return;   // 첫 연결이 느릴 때 요청이 쌓이지 않게
+  polling = true;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), STATUS_TIMEOUT_MS);
   try {
-    const r = await fetch("/api/status", { cache: "no-store" });
+    const r = await fetch("/api/status", { cache: "no-store", signal: ctl.signal });
     if (r.status === 401) return showLogin();
+    if (!r.ok) throw r.status;   // 📡가 꺼져 있으면 Funnel이 502를 돌려준다
     last = await r.json();
+    offline = false;
     setTop(last);
     if (!push.started) { push.started = true; pushInit(); }   // 로그인된 뒤 한 번 (구독 키는 로그인이 필요)
     if (tab === "now") renderNow();
-  } catch (e) { setTop(null, "PC에 연결할 수 없음"); }
+  } catch (e) {
+    setTop(null, "PC에 연결할 수 없음");
+    offline = true;
+    if (!last && tab === "now") renderNow();
+  } finally {
+    clearTimeout(timer);
+    polling = false;
+  }
   if (tab !== "now" && ++ticks % 5 === 0) tab === "stats" ? loadStats() : loadLog();   // 이력·통계 탭은 15초마다 갱신
 }
 tick(); setInterval(tick, 3000);
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});   // 페이지를 저장해 다음부터 바로 뜨게 (sw.js)
 </script>
 </body></html>

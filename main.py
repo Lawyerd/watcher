@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 import pystray
 import webview
 
-VERSION = "v3.2"
+VERSION = "v3.3"
 # 자가 테스트: 실행 중인 앱과 함께 돌 수 있게 중복 실행 검사 생략, 이력은 임시 폴더, 토스트 끔
 SELFTEST = "--selftest" in sys.argv
 START_IN_TRAY = "--tray" in sys.argv   # 윈도우 자동 실행 시 '트레이로 숨겨서 시작' (startup.py가 붙임)
