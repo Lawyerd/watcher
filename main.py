@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 import pystray
 import webview
 
-VERSION = "v3.3"
+VERSION = "v3.4"
 # 자가 테스트: 실행 중인 앱과 함께 돌 수 있게 중복 실행 검사 생략, 이력은 임시 폴더, 토스트 끔
 SELFTEST = "--selftest" in sys.argv
 START_IN_TRAY = "--tray" in sys.argv   # 윈도우 자동 실행 시 '트레이로 숨겨서 시작' (startup.py가 붙임)
@@ -75,6 +75,7 @@ from remote_server import RemoteServer, RemoteAuth, PIN_LEN, local_urls, funnel_
 from poller import Poller                                                    # noqa: E402
 import webui                                                                 # noqa: E402
 import startup                                                               # noqa: E402
+import stats                                                                 # noqa: E402
 from webpush import PushSender                                               # noqa: E402
 import updater                                                               # noqa: E402
 from screen_guard import ScreenGuard                                         # noqa: E402
@@ -216,6 +217,19 @@ class Api:
 
     def set_machine_notify(self, name, kind, on):
         self._app.notifier.toast.set(str(name), kind, bool(on))   # 기계별 설정은 저장해서 다시 켜도 그대로
+
+    # ── 이력·통계 (logs/ CSV만 읽는다, 장비에는 접근하지 않음) ──
+    def _order(self):
+        return [m["name"] for m in self._app.poller.snapshot()["machines"]]
+
+    def log_history(self, date=None):
+        return stats.history(self._app.notifier.log_dir, date, self._order())
+
+    def log_alarms(self, date=None):
+        return stats.alarms(self._app.notifier.log_dir, date)
+
+    def log_stats(self, days=7):
+        return stats.recent(self._app.notifier.log_dir, 30 if days == 30 else 7, self._order())
 
     # ── 원격 모니터링 ─────────────────────────────────────
     def remote_toggle(self):

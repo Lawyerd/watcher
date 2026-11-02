@@ -1,6 +1,4 @@
 import os
-import re
-import csv
 import hmac
 import json
 import time
@@ -10,7 +8,6 @@ import socket
 import hashlib
 import logging
 import secrets
-import datetime
 import threading
 import subprocess
 from http.cookies import SimpleCookie
@@ -22,7 +19,6 @@ import stats
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # 날짜 파라미터 검증 (경로 조작 방지)
 
 # [v2.4] PIN 로그인 (Funnel로 인터넷에 공개되므로 모든 /api/* 요청에 로그인 필요)
 PIN_LEN = 6
@@ -182,44 +178,20 @@ class RemoteServer:
             data["age_sec"] = round(time.monotonic() - self._snapshot_at, 1)
         return data
 
-    def _log_rows(self, prefix, query):
-        """logs/{prefix}_{날짜}.csv 행 목록 (헤더 제외). 날짜는 ?date=YYYY-MM-DD, 기본 오늘"""
-        today = datetime.date.today().isoformat()
-        date = query.get("date", [today])[0]
-        if not DATE_RE.match(date):
-            date = today
-        rows = []
-        if self.log_dir:
-            try:
-                with open(os.path.join(self.log_dir, f"{prefix}_{date}.csv"), newline="", encoding="utf-8-sig") as f:
-                    rows = list(csv.reader(f))[1:]
-            except OSError:
-                pass   # 그 날 기록 없음
-        return {"date": date, "today": today}, rows
-
     def _order(self):
         """설정 순서대로의 장비 이름 (통계 표시 순서)"""
         with self._lock:
             return [m["name"] for m in self._snapshot.get("machines", [])]
 
     def _history_json(self, query):
-        data, rows = self._log_rows("history", query)
-        # [v3.0] 정지 시간·결과 열은 새 형식에만 있다 (예전 5열 행은 정지 0, 완료로)
-        data["rows"] = [{"machine": r[1], "start": r[2], "end": r[3], "cycle": r[4],
-                         "pause": r[5] if len(r) > 5 else "", "result": r[7] if len(r) > 7 else "완료"}
-                        for r in reversed(rows) if len(r) >= 5]
-        data["summary"] = stats.day_detail(self.log_dir, data["date"], self._order()) if self.log_dir else []
-        return data
+        return stats.history(self.log_dir, query.get("date", [None])[0], self._order())
 
     def _stats_json(self, query):
         days = 30 if query.get("days", ["7"])[0] == "30" else 7
         return stats.recent(self.log_dir, days, self._order()) if self.log_dir else {"days": [], "machines": []}
 
     def _alarms_json(self, query):
-        data, rows = self._log_rows("alarm", query)
-        data["rows"] = [{"time": r[1], "machine": r[2], "kind": r[3], "code": r[4], "msg": r[5]}
-                        for r in reversed(rows) if len(r) >= 6]
-        return data
+        return stats.alarms(self.log_dir, query.get("date", [None])[0])
 
     def start(self):
         if self.running:

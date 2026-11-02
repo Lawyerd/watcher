@@ -24,3 +24,34 @@
   .tl { position: relative; height: 8px; border-radius: 3px; background: var(--btn); overflow: hidden; margin-top: 5px; }
   .tl i { position: absolute; top: 0; bottom: 0; }
   .tlx { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--sub); margin-top: 2px; }
+
+  /* 이력·통계 (PC·휴대폰 공통) */
+  .empty { padding: 32px 0; text-align: center; color: var(--sub); font-size: 13px; }
+  .pz { color: var(--yellow); }   /* 가공 중간에 멈춘 시간 */
+  .atag, .mtag { font: 11px var(--ui); border-radius: 6px; padding: 1px 6px; margin-left: 4px; white-space: nowrap; }
+  .atag { color: var(--red); background: var(--red-bg); }    /* 알람으로 끝난 가공 */
+  .mtag { color: var(--muted); background: var(--btn); }     /* 짧은 가공 (횟수·가공 시간에서 뺌) */
+  .eta { color: var(--m2); }                                 /* 완료 예상 */
+  /* 그날 요약 (가공 이력 탭 맨 위) */
+  .daysum { background: var(--card); border-radius: 14px; padding: 2px 14px; margin-bottom: 10px; }
+  .ds { padding: 10px 0; border-top: 1px solid var(--line); }
+  .ds:first-child { border-top: 0; }
+  .dsh { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
+  .dsv { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .dsv b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }   /* 고정폭 글꼴은 한글 '시간·분' 앞뒤가 벌어짐 */
+  .dsh .dsv { margin-top: 0; }
+  /* 통계 탭: 최근 7일·30일 하루 가공 시간 막대 */
+  .pcard { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-top: 12px; }
+  .seg { display: flex; gap: 6px; margin: 4px 0 2px; }
+  .seg button { background: none; border: 0; color: var(--sub); border-radius: 10px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  .seg button.on { background: var(--btn); color: var(--text); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+  .chart { position: relative; display: flex; align-items: flex-end; gap: 6px; height: 140px; padding-top: 18px; border-bottom: 1px solid var(--line); }
+  .chart.d30 { gap: 2px; }
+  .ymax { position: absolute; top: 0; left: 0; font-size: 10px; color: var(--sub); }
+  .bg { flex: 1; height: 100%; display: flex; align-items: flex-end; gap: 1px; cursor: pointer; }
+  .bg i { flex: 1; border-radius: 2px 2px 0 0; }
+  .cx { display: flex; gap: 6px; font-size: 10px; color: var(--sub); margin-top: 4px; }
+  .cx.d30 { gap: 2px; }
+  .cx span { flex: 1; text-align: center; white-space: nowrap; }

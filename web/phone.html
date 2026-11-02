@@ -83,20 +83,10 @@
   .datebar button { background: var(--card); color: var(--text); border: 0; border-radius: 10px; width: 46px; height: 38px; font-size: 15px; }
   .datebar button:disabled { opacity: .3; }
   .kind { font-size: 11px; border-radius: 8px; padding: 2px 8px; }
-  .empty { padding: 32px 0; text-align: center; color: var(--sub); font-size: 13px; }
-  /* 가공 이력: 중간에 멈춘 시간 · 알람으로 끝난 가공 */
-  .pz { color: var(--yellow); }
-  .atag { font: 11px var(--ui); border-radius: 6px; padding: 1px 6px; color: var(--red); background: var(--red-bg); margin-left: 4px; }
-  /* 그날 요약 (가공 이력 탭 맨 위) */
-  .daysum { background: var(--card); border-radius: 14px; padding: 2px 14px; margin-bottom: 10px; }
-  .ds { padding: 10px 0; border-top: 1px solid var(--line); }
-  .ds:first-child { border-top: 0; }
-  .dsh { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
-  .dsv { font-size: 12px; color: var(--muted); margin-top: 6px; }
-  .dsv b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }   /* 고정폭 글꼴은 한글 '시간·분' 앞뒤가 벌어짐 */
-  .dsh .dsv { margin-top: 0; }
+  .prgn { font-size: 12px; color: var(--muted); margin-left: 6px; }
+  .meta .pz { white-space: nowrap; }
+  .h.dim b, .h.dim .cyc, .h.dim .meta, .h.dim .prgn { color: var(--sub); font-weight: 400; }   /* 짧은 가공 */
   /* 휴대폰 알림 카드 (현황 탭 아래) */
-  .pcard { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-top: 12px; }
   .ptitle { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
   .pgrid { display: grid; grid-template-columns: minmax(0, 1fr) 56px 56px; gap: 6px; align-items: center; margin-top: 6px; }
   .phead { font-size: 11px; color: var(--muted); text-align: center; }
@@ -106,20 +96,6 @@
   .pcard .chip:disabled { opacity: .4; }
   .pnote { font-size: 12px; color: var(--sub); margin-top: 8px; line-height: 1.5; }
   .ptest { margin-top: 10px; background: var(--btn); color: var(--val); border: 0; border-radius: 10px; height: 34px; padding: 0 14px; font-size: 13px; }
-  /* 통계 탭: 최근 7일·30일 하루 가공 시간 막대 + 날짜별 목록 */
-  .seg { display: flex; gap: 6px; margin: 4px 0 2px; }
-  .seg button { background: none; border: 0; color: var(--sub); border-radius: 10px; padding: 6px 14px; font-size: 13px; }
-  .seg button.on { background: var(--btn); color: var(--text); }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
-  .chart { position: relative; display: flex; align-items: flex-end; gap: 6px; height: 140px; padding-top: 18px; border-bottom: 1px solid var(--line); }
-  .chart.d30 { gap: 2px; }
-  .ymax { position: absolute; top: 0; left: 0; font-size: 10px; color: var(--sub); }
-  .bg { flex: 1; height: 100%; display: flex; align-items: flex-end; gap: 1px; }
-  .bg i { flex: 1; border-radius: 2px 2px 0 0; }
-  .cx { display: flex; gap: 6px; font-size: 10px; color: var(--sub); margin-top: 4px; }
-  .cx.d30 { gap: 2px; }
-  .cx span { flex: 1; text-align: center; white-space: nowrap; }
   .tot { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
   nav { position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(4, 1fr);
         background: var(--nav); border-top: 1px solid var(--line); padding: 8px 0 calc(10px + env(safe-area-inset-bottom)); }
@@ -219,7 +195,7 @@ function tile(v, label, st) {
 function stateLine(m) {
   if (m.state === "OFFLINE") return "연결 끊김";
   const head = m.state === "ALARM" && m.alarms.length ? m.alarms[0].code : LABEL[m.state];
-  return head + " · " + ago(m.state_sec);
+  return head + " · " + (m.eta && !m.eta.at ? etaLeft(m.eta) : ago(m.state_sec));
 }
 
 function machineRow(m) {
@@ -228,7 +204,7 @@ function machineRow(m) {
   const cycCol = m.state === "ALARM" ? fg : (on ? "var(--text)" : "var(--sub)");
   let h = `<div class="m" data-name="${esc(m.name)}"><div class="row">
     <div class="who"><span class="bar" style="background:${fg}"></span><div style="min-width:0">
-      <div class="name">${esc(m.name)}</div><div class="st" style="color:${stCol}">${esc(stateLine(m))}</div></div></div>
+      <div class="name">${esc(m.name)}</div>${m.eta && m.eta.at ? `<div class="st eta">${esc(etaText(m.eta))}</div>` : `<div class="st" style="color:${stCol}">${esc(stateLine(m))}</div>`}</div></div>
     <div class="right">${on && m.program ? `<div class="prg mono">${esc(m.program)}</div>` : ""}<div class="cyc mono" style="color:${cycCol}">${on ? esc(m.cycle_time) : "-"}</div>
       <div class="meta">${on ? esc(m.tool) + " · " : ""}${m.done_today}회</div></div></div>`;
   if (expanded.has(m.name)) {
@@ -367,12 +343,7 @@ async function testPush() {
 }
 
 // ── 통계 탭 (B안): 최근 7일·30일 하루 가공 시간 + 날짜별 목록, 날짜를 누르면 그날 가공 이력 ──
-const MC = ["var(--green)", "var(--m2)", "var(--m3)", "var(--m4)"];
 let statDays = 7, statData = null;
-function hm(sec) {
-  const m = Math.floor(sec / 60), h = Math.floor(m / 60);
-  return h ? `${h}시간 ${m % 60}분` : `${m}분`;
-}
 
 async function loadStats() {
   try {
@@ -385,21 +356,12 @@ async function loadStats() {
 }
 
 function renderStats() {
-  const names = statData.machines, days = [...statData.days].reverse();   // 그래프는 오래된 날 → 오늘
-  const cut = (x, n) => (x.machines[n] || {}).cut_sec || 0;
-  const max = Math.max(60, ...days.flatMap(x => names.map(n => cut(x, n))));
-  const d30 = statDays === 30 ? " d30" : "";
-  let h = `<div class="seg">${[7, 30].map(n => `<button data-days="${n}"${n === statDays ? ' class="on"' : ""}>${n}일</button>`).join("")}</div>
-    <div class="pcard"><div class="legend">하루 가공 시간 ${names.map((n, i) => `<span><i style="background:${MC[i % 4]}"></i>${esc(n)}</span>`).join("")}</div>
-    <div class="chart${d30}"><span class="ymax">${hm(max)}</span>${days.map(x =>
-      `<div class="bg" data-date="${x.date}">${names.map((n, i) => `<i style="height:${cut(x, n) / max * 100}%;background:${MC[i % 4]}"></i>`).join("")}</div>`).join("")}</div>
-    <div class="cx mono${d30}">${days.map((x, i) => `<span>${!d30 || i % 5 === 0 || i === days.length - 1 ? +x.date.slice(8) : ""}</span>`).join("")}</div></div>`;
-  h += `<div class="list">${statData.days.map(x => {
-    const t = names.reduce((a, n) => { const m = x.machines[n] || {}; a.c += m.count || 0; a.s += m.cut_sec || 0; a.a += m.alarms || 0; return a; }, { c: 0, s: 0, a: 0 });
+  const names = statData.machines;
+  $("view").innerHTML = statSeg(statDays) + statChartHtml(statData, statDays) + `<div class="list">${statData.days.map(x => {
+    const t = dayTotal(x, names);
     return `<div class="h row" data-date="${x.date}"><div><b>${x.date.slice(5)} (${x.weekday})</b><div class="meta">가공 ${t.c}회 · 알람 ${t.a}회</div></div>
       <span class="tot"${t.s ? "" : ' style="color:var(--sub)"'}>${t.s ? hm(t.s) : "-"}</span></div>`;
   }).join("")}</div><div class="hint">날짜를 누르면 그날 가공 이력</div>`;
-  $("view").innerHTML = h;
 }
 
 function setTab(t) {
@@ -423,10 +385,10 @@ function renderLog() {
   const rows = log.rows;
   let h = dateBar();
   if (tab === "hist") {
-    h += daySummary(log.summary || []);
-    h += rows.length ? `<div class="list">${rows.map(r => `<div class="h row">
-        <div><b>${esc(r.machine)}</b><div class="meta mono">${esc(r.start)} → ${esc(r.end)}${pauseText(r.pause)}${r.result === "알람" ? `<span class="atag">알람</span>` : ""}</div></div>
-        <span class="mono cyc">${esc(r.cycle)}</span></div>`).join("")}</div>`
+    h += daySummaryHtml(log.summary || [], date === today);
+    h += rows.length ? `<div class="list">${rows.map(r => { const p = pauseLabel(r.pause); return `<div class="h row${r.minor ? " dim" : ""}">
+        <div><b>${esc(r.machine)}</b>${r.program ? `<span class="prgn mono">${esc(r.program)}</span>` : ""}<div class="meta mono">${esc(r.start)} → ${esc(r.end)}${p ? ` <span class="pz">· 정지 ${p}</span>` : ""}${rowTag(r)}</div></div>
+        <span class="mono cyc">${esc(r.cycle)}</span></div>`; }).join("")}</div>`
       : `<div class="empty">이 날 가공 이력이 없어요</div>`;
   } else {
     h += rows.length ? `<div class="list">${rows.map(r => {
@@ -440,24 +402,6 @@ function renderLog() {
       : `<div class="empty">이 날 알람 이력이 없어요</div>`;
   }
   $("view").innerHTML = h;
-}
-
-// 시작→끝 중 가공하지 않은 시간 (M00·M01·싱글 블록·피드 홀드) — 오른쪽 사이클 타임은 순수 가공 시간
-function pauseText(p) {
-  const s = p ? p.split(":").reduce((a, x) => a * 60 + +x, 0) : 0;
-  if (!s) return "";
-  const m = Math.floor(s / 60), h = Math.floor(m / 60);
-  return ` <span class="pz">· 정지 ${h ? `${h}시간 ${m % 60}분` : m ? `${m}분 ${s % 60}초` : `${s}초`}</span>`;
-}
-
-// 그날 요약 (A안): 장비별 가동률·타임라인(상태 기록이 있는 날만)·가공 횟수·가공 시간·알람
-function daySummary(list) {
-  if (!list.length) return "";
-  const end = date === today ? "지금" : "24시";
-  return `<div class="daysum">${list.map(s => `<div class="ds">
-    <div class="dsh"><b>${esc(s.machine)}</b>${s.util ? `<span class="dsv">가동률 <b>${utilPct(s.util)}</b></span>` : ""}</div>
-    ${s.util ? `<div class="tl">${timelineHtml(s.util)}</div><div class="tlx"><span>0시</span><span>${end}</span></div>` : ""}
-    <div class="dsv">가공 <b>${s.count}회</b> · <b>${hm(s.cut_sec)}</b> · 알람 <b>${s.alarms}회</b></div></div>`).join("")}</div>`;
 }
 
 async function loadLog() {

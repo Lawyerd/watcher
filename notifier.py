@@ -1,7 +1,9 @@
 import datetime
 import threading
 import logging
+import glob
 import os
+import re
 import csv
 import json
 
@@ -24,6 +26,11 @@ ALARM_HEADER   = ["일자", "시간", "장비명", "구분", "알람 번호", "�
 RESET_STATUS = "STOP"   # fanuc_logic run_map의 0번(리셋) — M30으로 프로그램이 끝나거나 리셋 버튼을 누른 상태
 PAUSE_TOAST_SEC = 30    # 프로그램 중간 멈춤이 이만큼 이어지면 토스트 한 번 (싱글 블록마다 뜨지 않게)
 TOAST_KINDS = ("alarm", "done", "pause")   # 🔔 메뉴의 세 칸 (알람은 토스트와 팝업·경고음을 함께 끈다)
+# [v3.4] 완료로 세지 않는 가공: 매크로 번호대(O8xxx·O9xxx)이거나 이만큼도 못 돌고 끝난 것. 이력에는 남긴다
+MACRO_RE = re.compile(r"^O[89]\d{3}$")
+MINOR_SEC = 60
+ETA_KEEP_SEC = 30       # 예상 시각이 이만큼 어긋나기 전에는 그대로 둔다 (초 단위 흔들림으로 분이 왔다 갔다 하지 않게)
+ETA_HISTORY_DAYS = 90   # 직전 실행을 찾을 때 읽는 이력 파일 수
 
 
 def hms_sec(t):
@@ -38,6 +45,27 @@ def hms_sec(t):
 def sec_hms(sec):
     sec = int(sec)
     return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
+def is_macro(program):
+    return bool(program and MACRO_RE.match(program))
+
+
+def is_minor(program, cyc_sec):
+    """[v3.4] 완료 횟수·가공 시간·완료 알림에서 뺄 가공인지. 지난 기록도 같은 기준으로 읽으므로 CSV에 따로 적지 않는다"""
+    return is_macro(program) or cyc_sec < MINOR_SEC
+
+
+def row_minor(row):
+    """가공 이력 CSV 한 줄 기준 is_minor (예전 5열 행은 프로그램 없음)"""
+    return is_minor(row[6] if len(row) > 6 else "", hms_sec(row[4]))
+
+
+def job_program(current, seen):
+    """가공 한 번의 프로그램 이름. 공구 교환 때 약 9초씩 O9001로 바뀌어도(실측) 본 프로그램 이름을 유지한다"""
+    if not seen or (is_macro(seen) and current and not is_macro(current)):
+        return current
+    return seen
 
 
 def dur_text(sec):
@@ -96,6 +124,40 @@ class StatusNotifier:
         self.log_dir = os.path.join(base_dir, "logs")
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
+        self.last_cycle = self._load_cycles()   # [v3.4] {(장비명, 프로그램): 직전 사이클 초} — 완료 예상용
+
+    def _load_cycles(self):
+        out = {}
+        for path in sorted(glob.glob(os.path.join(self.log_dir, "history_*.csv")))[-ETA_HISTORY_DAYS:]:
+            try:
+                with open(path, newline='', encoding='utf-8-sig') as f:
+                    rows = list(csv.reader(f))[1:]
+            except OSError:
+                continue
+            for r in rows:
+                if len(r) >= 8 and r[6] and r[7] != "알람" and not row_minor(r):
+                    out[(r[1], r[6])] = hms_sec(r[4])
+        return out
+
+    def eta(self, machine_name):
+        """[v3.4] 완료 예상 {"left": 남은 초, "at": "HH:MM"(멈춰 있으면 None), "prev": 직전 사이클}, 모르면 None.
+        평균이 아니라 같은 기계·같은 프로그램의 직전 실행을 쓴다 — 10.nc처럼 이름을 다른 작업에 다시 쓰면
+        평균은 0~30분으로 뭉개지지만, 직전 실행은 중앙 오차 1%였다(지난 이력 208건). 예상을 넘기면 숨긴다."""
+        st = self.last_states.get(machine_name)
+        job = st and st["job"]
+        if not job or st["alarm"] or "OFFLINE" in st["status"]:
+            return None
+        prev = self.last_cycle.get((machine_name, job["program"]))
+        left = prev - job["cyc"] if prev else 0
+        if left <= 0:
+            return None
+        at = None
+        if "RUN" in st["status"]:
+            target = datetime.datetime.now() + datetime.timedelta(seconds=left)
+            if not job.get("eta_at") or abs((target - job["eta_at"]).total_seconds()) > ETA_KEEP_SEC:
+                job["eta_at"] = target
+            at = (job["eta_at"] + datetime.timedelta(seconds=30)).strftime("%H:%M")   # 가까운 분으로
+        return {"left": left, "at": at, "prev": sec_hms(prev)}
 
     def _append_csv(self, filename, header, rows):
         log_file = os.path.join(self.log_dir, filename)
@@ -120,20 +182,20 @@ class StatusNotifier:
     def log_to_csv(self, machine_name, row, when):
         """가공 이력 한 줄을 끝난 날짜의 CSV에 저장. row = [시작, 종료, 사이클, 정지, 프로그램, 결과]"""
         day = when.strftime("%Y-%m-%d")
-        if day == datetime.datetime.now().strftime("%Y-%m-%d") and row[-1] != "알람":
+        if day == datetime.datetime.now().strftime("%Y-%m-%d") and row[-1] != "알람" and not is_minor(row[4], hms_sec(row[2])):
             counts = self.today_counts()
             counts[machine_name] = counts.get(machine_name, 0) + 1
         self._append_csv(f"history_{day}.csv", HISTORY_HEADER, [[day, machine_name] + row])
 
     def today_counts(self):
-        """[v2.4] 오늘 가공 완료 횟수 {장비명: n}. 앱을 재시작해도 오늘 CSV에서 다시 센다 (알람으로 끝난 가공은 제외)."""
+        """[v2.4] 오늘 가공 완료 횟수 {장비명: n}. 앱을 재시작해도 오늘 CSV에서 다시 센다 (알람으로 끝난 가공·짧은 가공은 제외)."""
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         if self._count_date != today:
             self._count_date, self._counts = today, {}
             try:
                 with open(os.path.join(self.log_dir, f"history_{today}.csv"), newline='', encoding='utf-8-sig') as f:
                     for row in list(csv.reader(f))[1:]:
-                        if len(row) >= 2 and (len(row) < 8 or row[7] != "알람"):
+                        if len(row) >= 5 and (len(row) < 8 or row[7] != "알람") and not row_minor(row):
                             self._counts[row[1]] = self._counts.get(row[1], 0) + 1
             except OSError:
                 pass
@@ -193,7 +255,7 @@ class StatusNotifier:
                     job = None
                 if job is None:
                     job = {"start": now, "alarm": False, "program": None}
-                job.update(cyc=cyc, end=now, paused_at=None, pause_toast=False, program=program or job["program"])
+                job.update(cyc=cyc, end=now, paused_at=None, pause_toast=False, program=job_program(job["program"], program))
             if job and is_alarm:
                 job["alarm"] = True
             if job and not running:
@@ -212,14 +274,16 @@ class StatusNotifier:
         return popup_trigger
 
     def _finish_job(self, machine_name, job, enabled):
-        """가공 한 번을 CSV에 기록하고, 정상으로 끝났으면 가공 완료 알림 (알람으로 끝난 가공은 기록만)"""
+        """가공 한 번을 CSV에 기록하고, 정상으로 끝났으면 가공 완료 알림 (알람으로 끝난 가공·짧은 가공은 기록만)"""
         cyc = job["cyc"]
         pause = max(0, int((job["end"] - job["start"]).total_seconds()) - cyc)   # 시작→끝 중 가공하지 않은 시간
         result = "알람" if job["alarm"] else "완료"
         self.log_to_csv(machine_name, [job["start"].strftime("%H:%M:%S"), job["end"].strftime("%H:%M:%S"),
                                        sec_hms(cyc), sec_hms(pause), job["program"] or "", result], job["end"])
-        if result != "완료":
+        if result != "완료" or is_minor(job["program"], cyc):
             return
+        if job["program"]:
+            self.last_cycle[(machine_name, job["program"])] = cyc
         done = self.today_counts().get(machine_name, 0)
         if enabled and self.toast.allowed(machine_name, "done"):
             self.send_toast(f"✅ [가공 완료] {machine_name}",

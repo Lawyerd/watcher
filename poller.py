@@ -213,6 +213,7 @@ class Poller(threading.Thread):
                 "spindle_load": d["spindle_load"], "spindle_rpm": d["spindle_rpm"], "axis_loads": d["axis_loads"],
                 "state_since": since.strftime("%H:%M:%S"), "state_sec": int((now - since).total_seconds()),
                 "done_today": counts.get(m.name, 0), "util": self.util.summary(m.name),
+                "eta": self.notifier.eta(m.name) if m.is_connected else None,
             })
         st, txt = summary_of(self.machines)
         return {"updated": now.strftime("%H:%M:%S"), "summary": {"state": st, "text": txt, "total": len(machines)},
