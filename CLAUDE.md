@@ -23,22 +23,23 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
 |---|---|
 | `main.py` | 진입점. `App`(pywebview 창·트레이·종료 처리), `Api`(PC 화면 → 파이썬 호출 창구: 연결/해제, 알림, 원격·PIN, 설정 창(장비·자동 실행), 창 조작), 아이콘 생성, 중복 실행 방지, `--selftest`, `--tray`(숨겨서 시작), 새 버전 연결(`update_*` API·트레이 '업데이트'·설치 실행 후 종료, `--updated`·`--remote`) |
 | `poller.py` | **장비 전용 스레드** (`Poller`). FOCAS 전부 + `notifier`·`utilization` 호출 + 스냅샷 생성 + 원격 서버 시작/정지 + 연결 상태 기억(`connections.json`). 화면은 `request()`로 명령만 넣는다 |
-| `web/desktop.html` | PC 화면 (HTML/CSS/JS 한 장). 헤더(📡⚙🔔 최소화 모드 — ✕), 장비 카드, 알람 목록, 부하·가동률 펼침 패널(CSS 전환), 설정 창(장비 + 일반: 자동 실행)·원격 PIN 창·알람 팝업(모달), 새 버전 띠(헤더 아래)·업데이트 창, 최소화 모드, 툴팁 |
-| `web/phone.html` | 휴대폰 페이지 (숫자 키패드 PIN 로그인 → 가동/정지/알람 타일 + 현황/가공 이력/알람 이력/통계 탭, 장비를 누르면 부하·가동률, 현황 탭 아래 '휴대폰 알림' 카드, 가공 이력 탭 맨 위 '그날 요약'). `manifest.webmanifest`·`sw.js`(푸시 받는 서비스 워커)와 함께 원격 서버가 응답 |
+| `web/desktop.html` | PC 화면 (HTML/CSS/JS 한 장). 헤더(📡⚙🔔 최소화 모드 — ✕), 🔔 메뉴(전체 + 기계 × 알림 종류), 장비 카드, 알람 목록, 부하·가동률 펼침 패널(CSS 전환), 설정 창(장비 + 일반: 자동 실행)·원격 PIN 창·알람 팝업(모달), 새 버전 띠(헤더 아래)·업데이트 창, 최소화 모드, 툴팁 |
+| `web/phone.html` | 휴대폰 페이지 (숫자 키패드 PIN 로그인 → 가동/정지/알람 타일 + 현황/가공 이력/알람 이력/통계 탭, 장비를 누르면 부하·가동률, 현황 탭 아래 '휴대폰 알림' 카드(기계 × 알람·완료), 가공 이력 탭 맨 위 '그날 요약'). `manifest.webmanifest`·`sw.js`(푸시 받는 서비스 워커)와 함께 원격 서버가 응답 |
 | `web/common.css`, `web/common.js` | 두 화면 공통: **다크 팔레트(`:root` 변수)**, 상태 색 `C`, `esc`, 부하 막대 색·폭, 가동률 문구·타임라인 |
 | `webui.py` | `web/` 파일 읽기. 각 화면의 `/*@COMMON_CSS@*/`·`/*@COMMON_JS@*/`(+ PC는 `/*@FONTS@*/`) 자리에 공통 파일을 끼워 넣는다 |
 | `startup.py` | 윈도우 시작 시 자동 실행 (HKCU `Run` 레지스트리, exe일 때만) |
+| `screen_guard.py` | 화면 복구 (`ScreenGuard` 스레드). WebView2가 죽거나 화면이 멈추면 장비 스레드는 그대로 두고 화면만 다시 만든다 (31번) |
 | `updater.py` | 새 버전 확인·앱 안 업데이트 (`Updater` 스레드). 회사 NAS `latest.json` 확인 → 설치 파일 내려받기·해시 확인 → main이 화면 없이 설치 실행 (30번) |
 | `build.ps1`, `CNC_Watcher.spec` | 빌드 한 번에: exe(PyInstaller) + 자산 복사 + 설치 파일(Inno Setup), `-Publish`면 회사 NAS 배포(설치 파일 + `latest.json`)까지. spec은 git에 포함 |
 | `installer/CNC_Watcher.iss`, `installer/images.py` | 설치 마법사 스크립트(사용자 폴더 설치·업데이트·삭제, 앱 안 업데이트용 `/UPDATE=1` 모드), 마법사 그림 생성 |
 | `fanuc_logic.py` | FOCAS 통신 (`FanucMachine`). 상태/사이클타임(파라미터 6757·6758)/공구번호(PMC D0450·D0452)/알람/스핀들·축 부하(`cnc_rdspmeter`·`cnc_rdsvmeter`, 회전수 `cnc_acts`)/실행 프로그램명(`cnc_exeprgname`, 선택 없음·MDI는 "O0"→None) 읽기 |
-| `notifier.py` | 상태 전이 감지 → winotify 토스트·휴대폰 푸시 + `logs/history_YYYY-MM-DD.csv` 가공 이력(**프로그램 한 번 = 한 줄**, 25번) + `logs/alarm_YYYY-MM-DD.csv` 알람 발생/해제 이력 기록 |
+| `notifier.py` | 상태 전이 감지 → winotify 토스트·휴대폰 푸시(기계별 설정 `ToastPrefs`, 32번) + `logs/history_YYYY-MM-DD.csv` 가공 이력(**프로그램 한 번 = 한 줄**, 25번) + `logs/alarm_YYYY-MM-DD.csv` 알람 발생/해제 이력 기록 |
 | `webpush.py` | 휴대폰 푸시 (`PushSender`). Web Push(VAPID + aes128gcm)를 `cryptography`로 직접 구현, 구독은 `push.json` (26번) |
 | `stats.py` | 지난날 통계: 날짜별 가공 횟수·가공 시간·알람 수(`recent`), 그날 요약(`day_detail`, 가동률은 `utilization.day_summary`) — logs/ CSV만 읽음 |
 | `utilization.py` | 가동률 (`UtilizationTracker`). 상태 변화를 `logs/state_YYYY-MM-DD.csv`에 기록, 오늘 0시부터 RUN 비율·타임라인 구간 계산 |
 | `remote_server.py` | 원격 모니터링 (`RemoteServer`). 읽기 전용 HTTP 서버(포트 8765): `/api/status`(스냅샷), `/api/history`(+그날 요약)·`/api/alarms`(`?date=`로 logs/ CSV), `/api/stats?days=7|30`, 푸시 구독 `POST /api/push`·`/api/push/check`·`/api/push/test`, 홈 화면 아이콘·manifest·`/sw.js`. `/api/*`는 PIN 로그인 필요(`RemoteAuth`, `remote.json`에 PIN 해시·쿠키 서명 키). 켜져 있는 동안 시스템 절전 차단 |
 | `machines.json` | 장비 목록 (앱 내 ⚙ 설정 창으로 편집, 재시작 불필요). 실제로 쓰는 것은 기록 폴더의 것이고, exe 옆 것은 새 PC에서 처음 한 번 복사되는 시작값 |
-| `remote.json`, `connections.json`, `push.json`, `logs/`, `cnc_watcher.log` | **기록 폴더**(exe는 `%LOCALAPPDATA%\CNC Watcher`, `python main.py`는 프로젝트 폴더, 28번)에 생기는 런타임 파일 (PIN 해시 / 꺼질 때 연결돼 있던 장비 / 푸시 서명 키·구독 / CSV 이력: history·alarm·state / 로그). 모두 gitignore |
+| `remote.json`, `connections.json`, `push.json`, `notify.json`, `logs/`, `cnc_watcher.log` | **기록 폴더**(exe는 `%LOCALAPPDATA%\CNC Watcher`, `python main.py`는 프로젝트 폴더, 28번)에 생기는 런타임 파일 (PIN 해시 / 꺼질 때 연결돼 있던 장비 / 푸시 서명 키·구독 / 기계별 PC 알림 설정 / CSV 이력: history·alarm·state / 로그). 모두 gitignore |
 | `read_status.py`, `connection_test.py` | 단독 연결 테스트 스크립트 |
 
 ## 반드시 알아야 할 제약 (고생해서 알아낸 것들)
@@ -87,7 +88,7 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
     - 정지 토스트는 프로그램 중간 멈춤이 30초 넘을 때 한 번 (싱글 블록마다 뜨지 않게).
     - 5월~10-22 예전 이력도 2026-10-22에 같은 기준으로 다시 묶었다 (다음 줄 '시작 카운터'(사이클 − RUN 시간)가 2초 이하로 돌아가면 새 프로그램, 아니면 앞 줄과 10초 안으로 이어질 때 같은 프로그램. 2,336줄 → 742줄). 묶기 전 원본은 `%LOCALAPPDATA%\CNC Watcher\백업\가공이력_묶기전_백업_2026-10-22.zip`.
 26. **휴대폰 푸시** (`webpush.py`): pywebpush 없이 `cryptography`로 직접 구현 — 암호화는 RFC 8291 예시 값과 바이트 단위로 일치함을 확인했다. **빌드 제외 목록에서 `cryptography`를 빼야 한다.**
-    - 📡 원격 모니터링이 켜져 있을 때만 보낸다(사용자 선택). PC 🔔는 토스트만 끄고 푸시와 무관. 알람 발생·가공 완료 두 종류, 휴대폰마다 따로 켬.
+    - 📡 원격 모니터링이 켜져 있을 때만 보낸다(사용자 선택). PC 🔔는 토스트만 끄고 푸시와 무관. 알람 발생·가공 완료 두 종류를 휴대폰마다, 기계마다 따로 켠다(32번).
     - 구독 주소는 푸시 서버 도메인(fcm.googleapis.com, *.push.apple.com, *.push.services.mozilla.com, *.notify.windows.com)만 허용 — 로그인한 사람이라도 이 PC가 임의 주소로 요청하게 만들 수 없게. 11번(제어는 HTTP 금지)의 유일한 예외가 로그인과 이 구독 POST다(장비 제어 아님, 로그인 필요, 4KB 제한, 최대 10대).
     - 아이폰은 **홈 화면에 추가해서 연 페이지에서만**, iOS 16.4 이상, https(Funnel 주소) 필요. VAPID `sub`는 휴대폰이 접속한 https 주소를 쓴다(애플은 형식이 틀리면 거부).
     - **전송은 certifi 인증서 묶음을 같이 써야 한다** (`SSL_CTX`). 윈도우는 루트 인증서를 필요할 때 내려받는데 파이썬(OpenSSL)은 못 해서, 애플 푸시 서버(web.push.apple.com)만 `CERTIFICATE_VERIFY_FAILED`로 실패했다(구글은 통과). 구독은 되는데 알림이 안 오면 로그의 `푸시 전송 실패`부터 볼 것. 2026-10-22 실기기(아이폰)로 애플 응답 201 확인.
@@ -114,6 +115,20 @@ v2.4까지는 Tkinter/customtkinter 화면이었다 (Tk는 애니메이션이 �
     - 업데이트: `%TEMP%\CNCWatcherUpdate`에 받아 해시 확인 → 설치 파일을 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1 /RELAUNCH="--updated [--tray] [--remote]"`로 띄우고 앱은 정상 종료(가동률 OFFLINE 마감·장비 해제). 설치 마법사는 `/UPDATE=1`이면 설치 폴더의 앱이 **스스로 꺼질 때까지 30초 기다린 뒤** 남은 것만 종료하고, 설치 후 `{param:RELAUNCH}`로 다시 켠다. 업데이트 때는 자동 실행 값을 쓰지 않는다(`Check: not IsUpdate` — ⚙에서 끈 자동 실행이 다시 켜지지 않게).
     - 파이썬이 받은 파일엔 '인터넷에서 받은 파일' 표시가 없어 'Windows의 PC 보호' 창이 안 뜬다. 업데이트 시작은 PC 화면(js_api)·트레이에서만 — 휴대폰(원격 서버)에는 넣지 않는다(11번). NAS `releases`에 쓸 수 있는 사람은 모든 PC에 깔릴 설치 파일을 바꿀 수 있다(Faxit·WinG와 같은 신뢰 수준).
     - **v3.0에는 이 기능이 없다** — v3.0을 쓰는 PC는 v3.1 설치 마법사를 한 번 직접 실행해야 한다.
+
+### 화면 복구
+31. **속이 빈 까만 창** (사용자 제보, 2026-11-02: 컴퓨터를 켠 뒤 창을 열면 아무것도 안 보이고 앱을 다시 켜면 정상). 시험 인스턴스의 WebView2 메인 프로세스를 강제로 끄면 똑같은 창이 된다 — 배경색 `#131316`만 남고 상태 조회가 멈춘다. pywebview는 이 상황을 처리하지 않는다(`ProcessFailed`를 듣지 않음).
+    - **원인 후보(확정 아님)**: WebView2 런타임 자동 업데이트. 2026-11-02 08:37 앱 시작 → 08:43 런타임 업데이트(부팅 직후 MicrosoftEdgeUpdate가 돎) → 13:41 사용자가 다시 켬. 10-28 18:51 업데이트 다음 날 아침에도 다시 켰다. 반대로 10-26·10-28 부팅 때는 5~26분 뒤 📡를 눌렀으니 화면이 살아 있었다. 숨겨서 시작한 것 자체는 원인이 아니다(15초·8분 숨겼다 열어도 정상). 업데이트가 정말 프로세스를 끄는지는 못 봤으니, 다시 생기면 로그의 `화면 프로세스 문제`·`화면 다시 만드는 중` 줄부터 볼 것.
+    - **복구(`screen_guard.py`)**: `ProcessFailed`(메인·화면 프로세스 종료), 조회 멈춤(창이 보이면 15초, 숨겨져 있으면 150초 — 숨은 페이지는 타이머가 1분까지 느려짐, 첫 화면은 60초), 맨 앞에 보이는 창이 단색(4초 간격 두 번 연속)을 잡아 WebView2 컨트롤만 새로 만든다. 앱을 다시 켜지 않으므로 진행 중인 가공 기록(25번)이 끊기지 않는다. 한 번 실행에 최대 5번.
+    - pywebview 내부(`form.browser`, `EdgeChrome`, `user_data_folder`)에 기대므로 pywebview를 올리면 다시 시험할 것. 이전 프로세스가 끝나는 중일 수 있어 새 화면은 새 임시 폴더를 쓴다. WebView2 객체는 화면 스레드에서만 만질 수 있어 `form.Invoke`로 한다. `evaluate_js`는 화면이 죽어 있으면 영원히 기다리므로 복구 코드에서 쓰지 말 것.
+
+### 기계별 알림
+32. **🔔는 누르면 메뉴가 열린다** (사용자가 시안 C를 고름, 2026-11-02 — DVF5000 알림만 보고 싶은데 DVF6500 것도 떠서). 메뉴 = 전체 스위치 + 기계 × 알람·완료·정지 칸. 예전처럼 한 번 누르면 전체 켜기/끄기가 아니다. 종 색: 초록 = 모두 켜짐, 노랑 = 일부만, 회색 = 꺼짐.
+    - **알람 칸은 토스트·팝업·경고음을 함께 끈다.** 꺼도 CSV 이력은 항상 기록하고(8번), PC 설정과 휴대폰 푸시는 서로 무관하다.
+    - **끈 것만 저장한다** — PC는 `notify.json`(`{"DVF6500": ["done", "pause"]}`), 휴대폰은 구독의 `off`(`{"done": ["DVF6500"]}`, 종류별 켜짐 `alarm`·`done`은 그대로). 새 기계나 이름을 바꾼 기계는 켜진 쪽으로 시작해 알람을 모르는 사이에 놓치지 않는다. `off`가 없는 v3.1 구독은 모든 기계를 받는다. 휴대폰은 어떤 기계도 안 켠 종류는 통째로 꺼지므로 그 종류는 새 기계도 안 받는다.
+    - 기계는 이름으로 구분한다(notifier·휴대폰 스냅샷이 이름만 알고, 휴대폰에 IP를 주지 않는다, 19번). 기계별 설정은 재시작해도 유지하지만 전체 스위치는 예전처럼 기억하지 않는다(23번).
+    - 메뉴 밖을 누르면 닫기만 한다(capture 단계에서 막음) — 뒤의 '해제' 버튼이 같이 눌리면 연결이 끊기니까. 창이 메뉴보다 작으면 `fitModal()`이 잠깐 늘린다.
+    - CSS 클래스 `.alarm`은 알람 팝업이 쓰고 있다. 칸은 `.chip-alarm`처럼 접두사를 붙일 것(같은 이름을 쓰면 칸에 팝업 여백이 들어간다, 실제로 겪음).
 
 ## 원격 접속 (휴대폰) 운영
 
@@ -177,6 +192,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Publish -Notes "바뀐 점1;
 - 자동 실행 함수 검증은 `startup.RUN_KEY`를 테스트용 키(예: `Software\CNCWatcherTest\Run`)로 바꿔서 하고 끝나면 지울 것 — 진짜 `Run` 키는 사용자가 설정 창에서만 바꾼다.
 - 원격 서버 검증: `RemoteServer(host="127.0.0.1", port=87xx, auth=RemoteAuth())`처럼 **localhost + 메모리 전용 인증**으로 띄울 것 (0.0.0.0 바인딩은 방화벽 팝업, 기본 경로는 `remote.json` 생성). `Poller`에 그 서버를 넣고 `request("remote_start")`하면 실장비 스냅샷까지 확인된다. 휴대폰 화면은 브라우저 모바일 뷰포트(375×812)로 확인.
 - 설치 파일 검증: `CNC_Watcher_Setup_*.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR=<임시 폴더> /TASKS=`로 설치 → 설치된 exe를 `--selftest`로 실행 → `<임시 폴더>\unins000.exe /VERYSILENT`로 삭제. `/TASKS=autostart`로 시험하면 진짜 자동 실행 값을 덮어쓰므로 미리 값을 적어두고 복원할 것.
+- **기계별 알림 검증** (32번): notifier에 가짜 푸시·토스트를 넣어 상태를 흘리고(토스트·팝업·CSV·푸시 기계 이름), `PushSender._post`를 바꿔 보낼 곳을 확인한다. PC 메뉴는 `--selftest`(자가 테스트가 `notify` 캡처, 알림 전체가 꺼진 상태라 흐리게 나옴). 휴대폰 카드는 시험 서버 + 브라우저 375×812에서 `navigator.serviceWorker`·`Notification`을 가짜로 넣으면 칸을 눌러 `/api/push`까지 확인된다. 실제 수신은 휴대폰에서만 확인 가능. 2026-11-02 여기까지 통과.
+- **화면 복구 검증** (31번): `--selftest`로 띄운 시험 인스턴스의 `msedgewebview2.exe`를 `--user-data-dir`로 골라(실행 중인 실제 앱은 건드리지 않게) 끈 뒤 창을 열어 캡처한다. 2026-11-02 메인 프로세스(숨김·보임)·화면 프로세스 종료 2~3초, 단색 5초 안에 복구, 조회 멈춤은 15초 뒤 다시 만들기 시작까지 확인. 실제 재부팅·런타임 업데이트에서는 아직 확인 못 함.
 - **새 버전·업데이트 검증** (30번):
   - 확인 기능: `updater.Updater("v3.1", url=<localhost 서버의 latest.json>)`로 `check()`·`request(False)`(가공 중 → waiting)·내려받기·해시 불일치를 시험한다. 실제 NAS는 `Updater("v3.0").check()`로 읽혀야 한다.
   - 화면: 자가 테스트가 가짜 상태(v9.9)로 띠·업데이트 창(가공 중)·내려받는 중을 캡처한다.
@@ -197,6 +214,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Publish -Notes "바뀐 점1;
 **확인 끝난 것**: 가공 이력 프로그램 단위 기록(실장비), 예전 이력 다시 묶기, 통계·그날 요약 화면, 푸시 테스트 알림(아이폰), 아이폰 앱 모드 하단바, 설치·업데이트·삭제(시험 설치), Tailscale 없는 PC 차단(흉내 시험), 새 버전 확인·업데이트 창·설치 마법사 업데이트 모드(시험 서버·임시 설치본, 30번).
 
 **아직 실사용으로 확인 못 한 것** (사용자 확인 필요)
+- 기계별 알림(32번): 실제 토스트·아이폰 푸시가 끈 기계에서 안 오는지. 아이폰은 2026-10-30 15:17부터 구독 0대라 먼저 다시 켜야 한다.
+- 까만 창 복구(31번): 실제 재부팅·WebView2 업데이트 때. 로그의 `화면 프로세스 문제` 줄로 원인도 확정할 것.
 - 실제 가공이 끝났을 때·알람이 났을 때 오는 푸시 (테스트 알림만 확인됨). 안 오면 실제 기록 폴더 `cnc_watcher.log`의 `푸시 전송`/`푸시 보낼 휴대폰 없음`/`푸시 전송 실패` 줄부터 볼 것.
 - 재부팅 후 자동 실행(실제 레지스트리), 절전 복귀 후 자동 재연결(v3.0 장비 스레드 구조에서).
 - 다른 PC에서 설치 마법사를 직접 눌러 설치.

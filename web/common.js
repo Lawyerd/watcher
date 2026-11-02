@@ -5,6 +5,14 @@ const C = { RUN: ["var(--green)", "var(--green-bg)"], ALARM: ["var(--red)", "var
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
+// 기계별 알림 칸: 종류 → [이름, 아이콘] (PC는 세 가지, 휴대폰은 알람·완료)
+const CHIP = {
+  alarm: ["알람", '<svg viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'],
+  done: ["완료", '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>'],
+  pause: ["정지", '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>'],
+};
+const chipHtml = (name, kind, on, disabled) => `<button class="chip chip-${kind}${on ? " on" : ""}" data-name="${esc(name)}" data-kind="${kind}"${disabled ? " disabled" : ""} aria-label="${esc(name)} ${CHIP[kind][0]}">${CHIP[kind][1]}</button>`;
+
 // 부하 막대: 0~150% 눈금, 80% 이상 노랑 · 100% 이상 빨강
 const loadCol = p => p == null ? "var(--sub)" : p >= 100 ? "var(--red)" : p >= 80 ? "var(--yellow)" : "var(--green)";
 const loadWidth = p => Math.min(p || 0, 150) / 1.5 + "%";

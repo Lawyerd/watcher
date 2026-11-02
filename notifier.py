@@ -3,6 +3,7 @@ import threading
 import logging
 import os
 import csv
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ ALARM_HEADER   = ["일자", "시간", "장비명", "구분", "알람 번호", "�
 
 RESET_STATUS = "STOP"   # fanuc_logic run_map의 0번(리셋) — M30으로 프로그램이 끝나거나 리셋 버튼을 누른 상태
 PAUSE_TOAST_SEC = 30    # 프로그램 중간 멈춤이 이만큼 이어지면 토스트 한 번 (싱글 블록마다 뜨지 않게)
+TOAST_KINDS = ("alarm", "done", "pause")   # 🔔 메뉴의 세 칸 (알람은 토스트와 팝업·경고음을 함께 끈다)
 
 
 def hms_sec(t):
@@ -44,10 +46,46 @@ def dur_text(sec):
     return f"{h}시간 {m}분" if h else (f"{m}분 {s}초" if m else f"{s}초")
 
 
+class ToastPrefs:
+    """[v3.2] 기계별 PC 알림 설정 (notify.json). 끈 것만 적어 둔다 — 새 기계나 이름을 바꾼 기계는
+    모두 켜진 채로 시작하므로 알림을 모르는 사이에 놓치지 않는다. 이력·휴대폰 푸시와는 상관없다."""
+
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+        try:
+            with open(path, encoding="utf-8") as f:
+                self._off = {str(k): [x for x in v if x in TOAST_KINDS] for k, v in json.load(f).items()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            self._off = {}
+
+    def allowed(self, machine, kind):
+        return kind not in self._off.get(machine, ())
+
+    def table(self, machines):
+        return {m: {k: self.allowed(m, k) for k in TOAST_KINDS} for m in machines}
+
+    def set(self, machine, kind, on):
+        if kind not in TOAST_KINDS:
+            return
+        with self._lock:
+            off = [k for k in self._off.get(machine, []) if k != kind] + ([] if on else [kind])
+            if off:
+                self._off[machine] = off
+            else:
+                self._off.pop(machine, None)
+            try:
+                with open(self.path, "w", encoding="utf-8") as f:
+                    json.dump(self._off, f, ensure_ascii=False, indent=4)
+            except OSError as e:
+                logger.error(f"알림 설정 저장 실패: {e}")
+
+
 class StatusNotifier:
     def __init__(self, icon_path=None, base_dir=".", push=None):
         self.icon_path = icon_path
         self.push = push           # [v3.0] 휴대폰 푸시 (webpush.PushSender, 📡 켜져 있을 때만 실제로 보냄)
+        self.toast = ToastPrefs(os.path.join(base_dir, "notify.json"))   # [v3.2] 기계별 PC 알림
         self.last_states = {}
         self.active_alarms = {}    # [v2.4] 장비별 현재 알람 {code: alarm} — 발생/해제 이력 비교용
         self._csv_lock = threading.Lock()
@@ -118,7 +156,7 @@ class StatusNotifier:
 
     def check_and_notify(self, machine_name, current_status, cycle_time, is_alarm, enabled, alarms=(), program=None):
         """장비 스레드가 0.5초마다 호출. 알람 알림, 가공 기록(프로그램 한 번 = 한 줄), 정지 알림을 처리한다.
-        enabled(🔔)는 PC 토스트만 끈다 — CSV 기록과 휴대폰 푸시는 그대로."""
+        enabled(🔔 전체)와 기계별 설정은 PC 토스트·팝업만 끈다 — CSV 기록과 휴대폰 푸시는 그대로."""
         prev = self.last_states.get(machine_name, {"status": "OFFLINE", "alarm": False, "job": None})
         now = datetime.datetime.now()
         now_time = now.strftime("%H:%M:%S")
@@ -135,12 +173,13 @@ class StatusNotifier:
         # 1. 🚨 기계 알람
         if is_alarm and not prev["alarm"]:
             detail = "\n".join(f"{a['code']} {a['msg']}" for a in alarms[:2])
-            if enabled:
+            if enabled and self.toast.allowed(machine_name, "alarm"):
                 msg = f"{detail}\n발생 시간: {now_time}" if alarms else f"발생 시간: {now_time}\n즉시 장비 상태를 확인하십시오!"
                 self.send_toast(f"🚨 [긴급 알람] {machine_name}", msg)
                 popup_trigger = "ALARM_POPUP"
             if self.push:
-                self.push.send("alarm", f"🚨 {machine_name} 알람", detail or "장비 상태를 확인하세요", tag=f"alarm-{machine_name}")
+                self.push.send("alarm", f"🚨 {machine_name} 알람", detail or "장비 상태를 확인하세요",
+                               tag=f"alarm-{machine_name}", machine=machine_name)
 
         # 2. 가공 기록 — [v3.0] 프로그램 한 번(리셋될 때까지)을 한 줄로. 중간 멈춤(M00·M01·싱글 블록·피드 홀드)은
         #    묶는다. 예전엔 RUN에서 벗어날 때마다 '가공 완료'로 기록해 한 프로그램이 여러 줄로 쪼개졌고,
@@ -163,7 +202,7 @@ class StatusNotifier:
                 if current_status == RESET_STATUS:
                     self._finish_job(machine_name, job, enabled)
                     job = None
-                elif (enabled and job["paused_at"] and not job["pause_toast"]
+                elif (enabled and self.toast.allowed(machine_name, "pause") and job["paused_at"] and not job["pause_toast"]
                       and (now - job["paused_at"]).total_seconds() >= PAUSE_TOAST_SEC):
                     job["pause_toast"] = True
                     self.send_toast(f"⏸️ [작업 정지] {machine_name}",
@@ -182,12 +221,12 @@ class StatusNotifier:
         if result != "완료":
             return
         done = self.today_counts().get(machine_name, 0)
-        if enabled:
+        if enabled and self.toast.allowed(machine_name, "done"):
             self.send_toast(f"✅ [가공 완료] {machine_name}",
                             f"가공 {dur_text(cyc)} · 완료 {job['end'].strftime('%H:%M:%S')}\n다음 가공 준비가 가능합니다.")
         if self.push:
             body = " · ".join(x for x in (f"가공 {dur_text(cyc)}", job["program"], f"오늘 {done}회째") if x)
-            self.push.send("done", f"✅ {machine_name} 가공 완료", body, tag=f"done-{machine_name}")
+            self.push.send("done", f"✅ {machine_name} 가공 완료", body, tag=f"done-{machine_name}", machine=machine_name)
 
     def send_toast(self, title, message):
         final_icon_path = self.icon_path if self.icon_path and os.path.exists(self.icon_path) else ""

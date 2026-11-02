@@ -46,6 +46,7 @@ PUSH_HOSTS = ("fcm.googleapis.com", ".push.apple.com", ".push.services.mozilla.c
 MAX_SUBS = 10          # 휴대폰 여러 대까지 (넘치면 오래된 것부터 지움)
 TTL_SEC = 6 * 3600     # 휴대폰이 꺼져 있으면 푸시 서버가 이만큼 들고 있다가 전달
 KINDS = ("alarm", "done")
+MAX_MACHINES = 100     # 구독에 적어 둘 수 있는 '끈 기계' 수 (요청 크기는 원격 서버가 4KB로 제한)
 
 
 def _b64(b):
@@ -64,6 +65,12 @@ def valid_endpoint(url):
     u = urlsplit(str(url))
     host = (u.hostname or "").lower()
     return u.scheme == "https" and any(host == h or (h.startswith(".") and host.endswith(h)) for h in PUSH_HOSTS)
+
+
+def wants(sub, kind, machine=None):
+    """이 구독이 해당 기계의 해당 알림을 받는지. [v3.2] 기계별로는 끈 것만 적어 둔다(off) — 새 기계나 이름을 바꾼
+    기계는 받는 쪽으로 시작해 알람을 모르는 사이에 놓치지 않는다. off가 없는 v3.1 구독은 모든 기계를 받는다."""
+    return bool(sub.get(kind)) and machine not in (sub.get("off") or {}).get(kind, ())
 
 
 def encrypt(payload, p256dh, auth):
@@ -130,35 +137,37 @@ class PushSender:
         except (KeyError, TypeError, ValueError, AttributeError):
             return "잘못된 구독 정보"
         on = {k: bool(prefs.get(k)) for k in KINDS}
+        off = prefs.get("off") if isinstance(prefs.get("off"), dict) else {}
+        off = {k: [str(n) for n in off[k]][:MAX_MACHINES] for k in KINDS if isinstance(off.get(k), list) and off[k]}
         with self._lock:
             self.subs = [s for s in self.subs if s["endpoint"] != endpoint]
             if any(on.values()):
-                self.subs.append({"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}, **on,
+                self.subs.append({"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}, **on, "off": off,
                                   "origin": origin, "added": time.strftime("%Y-%m-%d %H:%M")})
                 self.subs = self.subs[-MAX_SUBS:]
             self._save()
-        logger.info(f"휴대폰 알림 구독 {'변경' if any(on.values()) else '해제'}: {on} (총 {len(self.subs)}대)")
+        logger.info(f"휴대폰 알림 구독 {'변경' if any(on.values()) else '해제'}: {on}{f' 끈 기계 {off}' if off else ''} (총 {len(self.subs)}대)")
         return None
 
     def prefs(self, endpoint):
         with self._lock:
             s = next((s for s in self.subs if s["endpoint"] == endpoint), None)
-        return {k: s[k] for k in KINDS} if s else None
+        return {**{k: s[k] for k in KINDS}, "off": s.get("off") or {}} if s else None
 
     # ── 알림 보내기 (장비 스레드에서 호출 — 큐에 넣기만 하고 바로 돌아감) ──
-    def send(self, kind, title, body, tag=None, endpoint=None):
-        """kind: alarm/done(구독에서 켠 기기만) 또는 test(endpoint 한 대). 📡가 꺼져 있으면 보내지 않음"""
+    def send(self, kind, title, body, tag=None, endpoint=None, machine=None):
+        """kind: alarm/done(구독에서 그 기계를 켠 기기만) 또는 test(endpoint 한 대). 📡가 꺼져 있으면 보내지 않음"""
         if kind != "test" and not self.enabled():
             return
-        self._q.put((kind, json.dumps({"title": title, "body": body, "tag": tag or kind}, ensure_ascii=False), endpoint))
+        self._q.put((kind, json.dumps({"title": title, "body": body, "tag": tag or kind}, ensure_ascii=False), endpoint, machine))
 
     def _worker(self):
         while True:
-            kind, payload, endpoint = self._q.get()
+            kind, payload, endpoint, machine = self._q.get()
             with self._lock:
-                targets = [s for s in self.subs if (s["endpoint"] == endpoint if kind == "test" else s.get(kind))]
+                targets = [s for s in self.subs if (s["endpoint"] == endpoint if kind == "test" else wants(s, kind, machine))]
             if not targets:
-                logger.info(f"푸시 보낼 휴대폰 없음 ({kind})")
+                logger.info(f"푸시 보낼 휴대폰 없음 ({kind}{f' {machine}' if machine else ''})")
             for s in targets:
                 try:
                     self._post(s, kind, payload.encode("utf-8"))

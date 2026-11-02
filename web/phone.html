@@ -91,13 +91,13 @@
   /* 휴대폰 알림 카드 (현황 탭 아래) */
   .pcard { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-top: 12px; }
   .ptitle { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
-  .prow { display: flex; justify-content: space-between; align-items: center; font-size: 14px; padding: 7px 0; }
-  .sw { width: 44px; height: 26px; border-radius: 13px; border: 0; padding: 0; background: var(--outline); position: relative; flex: none; transition: background .2s; }
-  .sw i { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .2s; }
-  .sw.on { background: var(--green); }
-  .sw.on i { transform: translateX(18px); }
-  .sw:disabled { opacity: .4; }
-  .pnote { font-size: 12px; color: var(--sub); margin-top: 4px; line-height: 1.5; }
+  .pgrid { display: grid; grid-template-columns: minmax(0, 1fr) 56px 56px; gap: 6px; align-items: center; margin-top: 6px; }
+  .phead { font-size: 11px; color: var(--muted); text-align: center; }
+  .pname { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pcard .chip { height: 38px; border-radius: 8px; }
+  .pcard .chip svg { width: 17px; height: 17px; }
+  .pcard .chip:disabled { opacity: .4; }
+  .pnote { font-size: 12px; color: var(--sub); margin-top: 8px; line-height: 1.5; }
   .ptest { margin-top: 10px; background: var(--btn); color: var(--val); border: 0; border-radius: 10px; height: 34px; padding: 0 14px; font-size: 13px; }
   /* 통계 탭: 최근 7일·30일 하루 가공 시간 막대 + 날짜별 목록 */
   .seg { display: flex; gap: 6px; margin: 4px 0 2px; }
@@ -248,7 +248,10 @@ function renderNow() {
 }
 
 // ── 휴대폰 푸시 알림 (B안: 현황 탭 아래 카드) — PC에서 📡가 켜져 있을 때만 서버가 보낸다 ──
-const push = { state: "init", prefs: { alarm: false, done: false }, key: null, msg: "", busy: false, started: false };
+// prefs: 종류별로 받는지(alarm·done) + 그중 끈 기계 이름(off) — 새 기계는 받는 쪽으로 시작해 알람을 놓치지 않는다 (webpush.wants)
+const push = { state: "init", prefs: { alarm: false, done: false, off: {} }, key: null, msg: "", busy: false, started: false };
+const PUSH_KINDS = ["alarm", "done"];
+const pushOn = (name, kind) => push.prefs[kind] && !(push.prefs.off[kind] || []).includes(name);
 const PUSH_NOTE = {
   init: "확인 중…",
   insecure: "외부 접속 주소(https)로 열어야 알림을 켤 수 있어요",
@@ -274,8 +277,9 @@ async function post(url, body) {
 
 function pushCard() {
   const ok = push.state === "ready" && !push.busy;
-  const row = (k, label) => `<div class="prow"><span>${label}</span><button class="sw${push.prefs[k] ? " on" : ""}" data-push="${k}"${ok ? "" : " disabled"} aria-label="${label}"><i></i></button></div>`;
-  return `<div class="pcard"><div class="ptitle">이 휴대폰으로 알림 받기</div>${row("alarm", "🚨 알람 발생")}${row("done", "✅ 가공 완료")}
+  return `<div class="pcard"><div class="ptitle">이 휴대폰으로 알림 받기</div>
+    <div class="pgrid"><span></span>${PUSH_KINDS.map(k => `<span class="phead">${CHIP[k][0]}</span>`).join("")}
+      ${last.machines.map(m => `<span class="pname">${esc(m.name)}</span>${PUSH_KINDS.map(k => chipHtml(m.name, k, pushOn(m.name, k), !ok)).join("")}`).join("")}</div>
     <div class="pnote">${esc(push.msg || PUSH_NOTE[push.state])}</div>
     ${ok && (push.prefs.alarm || push.prefs.done) ? `<button class="ptest" data-ptest>테스트 알림 보내기</button>` : ""}</div>`;
 }
@@ -300,8 +304,13 @@ async function pushInit() {
   if (tab === "now") renderNow();
 }
 
-async function togglePush(kind) {
-  const want = { ...push.prefs, [kind]: !push.prefs[kind] };
+async function togglePush(name, kind) {
+  const names = last.machines.map(m => m.name), want = { off: {} };
+  for (const k of PUSH_KINDS) {   // 표를 종류별 켜짐 + 끈 기계 목록으로 바꾼다. 한 대도 안 켜면 그 종류는 통째로 끔
+    const off = names.filter(n => (n === name && k === kind) ? pushOn(n, k) : !pushOn(n, k));
+    want[k] = off.length < names.length;
+    want.off[k] = want[k] ? off : [];
+  }
   push.busy = true; push.msg = ""; renderNow();
   try {
     // 권한 요청은 누른 직후 가장 먼저 (아이폰은 사용자 동작 안에서만 물어볼 수 있다)
@@ -451,7 +460,7 @@ function shiftDate(n) {
 $("view").addEventListener("click", e => {
   const t = sel => e.target.closest(sel);
   if (t("[data-day]")) return shiftDate(+t("[data-day]").dataset.day);
-  if (t("[data-push]")) return togglePush(t("[data-push]").dataset.push);
+  if (t(".chip")) return togglePush(t(".chip").dataset.name, t(".chip").dataset.kind);
   if (t("[data-ptest]")) return testPush();
   if (t("[data-days]")) { statDays = +t("[data-days]").dataset.days; return loadStats(); }
   if (t("[data-date]") && tab === "stats") { date = t("[data-date]").dataset.date; return setTab("hist"); }

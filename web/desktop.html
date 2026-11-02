@@ -17,6 +17,7 @@
           display: flex; align-items: center; justify-content: center; cursor: pointer; }
   .ibtn:hover { background: var(--btn); }
   .ibtn.on, .ibtn.on:hover { background: var(--green-bg); color: var(--green); }   /* 켜진 토글(📡·🔔)은 초록 */
+  .ibtn.part, .ibtn.part:hover { background: var(--yellow-bg); color: var(--yellow); }   /* 🔔 일부 기계·종류만 켜짐 */
   .ibtn.off { opacity: .35; }   /* 쓸 수 없는 기능 (Tailscale 없는 PC의 📡) — 누르면 안내만 */
   .ibtn svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.7; fill: none; stroke-linecap: round; stroke-linejoin: round; }
   .divider { width: 1px; height: 18px; background: var(--line); margin: 0 6px; }
@@ -99,6 +100,18 @@
   body.compact .name { font-size: 14px; }
   body.compact .ctime { display: block; }
 
+  /* ── 🔔 메뉴: 전체 + 기계 × 알림 종류 ── */
+  #npop { position: fixed; z-index: 30; display: none; background: var(--btn); border: 1px solid var(--outline); border-radius: 10px; padding: 10px 12px; }
+  #npop.show { display: block; }
+  #npop .nall { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding-bottom: 9px; border-bottom: 1px solid var(--outline); cursor: pointer; }
+  #npop .ngrid { display: grid; grid-template-columns: minmax(70px, 150px) 44px 44px 44px; gap: 6px; align-items: center; margin-top: 8px; }
+  #npop .ngrid.off { opacity: .4; }   /* 전체를 꺼도 기계별 설정은 그대로 둔다 */
+  #npop .nhead { font-size: 11px; color: var(--muted); text-align: center; }
+  #npop .nname { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; }
+  #npop .chip { width: 44px; height: 26px; }
+  #npop .chip svg { width: 14px; height: 14px; }
+  #npop .note { margin-top: 9px; }
+
   /* ── 툴팁 ── */
   #tip { position: fixed; z-index: 50; display: none; background: #2A2A2A; color: #fff; border: 1px solid #444; font-size: 12px;
          padding: 4px 8px; white-space: pre-line; text-align: center; pointer-events: none; max-width: 320px; }
@@ -136,11 +149,11 @@
   .opt { display: flex; align-items: center; justify-content: space-between; font-size: 13px; margin-top: 8px; cursor: pointer; }
   .opt.sub { justify-content: flex-start; gap: 8px; font-size: 12px; color: var(--val); }
   .opt.off { opacity: .4; pointer-events: none; }
-  .modal .sw { appearance: none; width: 34px; height: 18px; padding: 0; border: 0; border-radius: 9px; background: var(--outline);
+  .sw { appearance: none; width: 34px; height: 18px; padding: 0; border: 0; border-radius: 9px; background: var(--outline);
                position: relative; margin: 0; flex: none; cursor: pointer; transition: background .2s; }
-  .modal .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .2s; }
-  .modal .sw:checked { background: var(--green); }
-  .modal .sw:checked::after { transform: translateX(16px); }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .sw:checked { background: var(--green); }
+  .sw:checked::after { transform: translateX(16px); }
   .modal .chk { appearance: none; width: 15px; height: 15px; padding: 0; border: 1px solid var(--outline); border-radius: 4px; background: none;
                 position: relative; margin: 0; flex: none; cursor: pointer; }
   .modal .chk:checked { background: var(--accent); border-color: var(--accent); }
@@ -174,7 +187,7 @@
     <div class="drag pywebview-drag-region"><span id="dot">●</span><span id="sum">불러오는 중…</span><span id="total"></span></div>
     <button class="ibtn" id="b-remote" data-tip="원격 모니터링: 꺼짐&#10;우클릭: 설정"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48 0a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg></button>
     <button class="ibtn" id="b-settings" data-tip="설정"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
-    <button class="ibtn on" id="b-bell" data-tip="알림: 켜짐"></button>
+    <button class="ibtn on" id="b-bell"></button>
     <button class="ibtn" id="b-compact" data-tip="최소화 모드"><svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg></button>
     <span class="divider"></span>
     <button class="wbtn" id="b-min" aria-label="최소화"><svg viewBox="0 0 12 12"><path d="M1 6h10"/></svg></button>
@@ -183,6 +196,7 @@
   <div class="upd" id="upd"></div>
   <div id="list"></div>
 </div>
+<div id="npop"></div>
 <div id="tip"></div>
 <div id="modals"></div>
 <script>
@@ -294,7 +308,7 @@ function render(d) {
   $("dot").style.color = C[st][0]; $("sum").textContent = d.summary.text;
   $("sum").style.color = st === "ALARM" ? "var(--red)" : st === "OFFLINE" ? "var(--muted)" : "var(--text)";
   $("total").textContent = `/  전체 ${d.summary.total}대`;
-  setRemote(d.remote); setBell(d.notify);
+  setRemote(d.remote); setBell(d.notify, d.toast);
   renderUpdate(updTest || d.update);
   for (const e of d.events || []) handleEvent(e);
   if (!animating) fitWindow();   // 움직이는 중에 재면 중간 높이로 창이 줄어듦
@@ -326,13 +340,51 @@ function setRemote(on) {
     if (b.classList.contains("on")) b.dataset.tip = "원격 모니터링: 켜짐 (절전 차단 중)" + remoteUrls + "\n우클릭: 설정";
   });
 }
-function setBell(on) {
-  const b = $("b-bell");
-  if (b.dataset.state === String(on)) return;
-  b.dataset.state = String(on); b.classList.toggle("on", on);
-  b.innerHTML = on ? ICON.bell : ICON.bellOff; b.dataset.tip = on ? "알림: 켜짐" : "알림: 꺼짐";
+const BELL = { on: [ICON.bell, "알림: 모두 켜짐"], part: [ICON.bell, "알림: 일부만 켜짐"], off: [ICON.bellOff, "알림: 꺼짐"] };
+function setBell(on, toast) {
+  const b = $("b-bell"), vals = Object.values(toast || {}).flatMap(t => Object.values(t)), n = vals.filter(Boolean).length;
+  const st = !on || (vals.length && !n) ? "off" : n < vals.length ? "part" : "on";
+  if (b.dataset.state === st) return;
+  b.dataset.state = st; b.classList.toggle("on", st === "on"); b.classList.toggle("part", st === "part");
+  b.innerHTML = BELL[st][0]; b.dataset.tip = BELL[st][1] + "\n누르면 기계별 설정";
 }
-$("b-bell").addEventListener("click", async () => setBell(await api().set_notify($("b-bell").dataset.state !== "true")));
+// 🔔 메뉴: 전체 스위치(이번 실행만, 23번) + 기계 × 알림 종류(notify.json에 저장)
+const NOTIFY_KINDS = ["alarm", "done", "pause"];
+const menuOpen = () => $("npop").classList.contains("show");
+function openNotifyMenu() {
+  hideTip();
+  const pop = $("npop"), names = last ? last.machines.map(m => m.name) : [], rc = $("b-bell").getBoundingClientRect();
+  pop.innerHTML = `<label class="nall"><span>전체 알림</span><input type="checkbox" class="sw"${last && last.notify ? " checked" : ""}></label>
+    <div class="ngrid${last && last.notify ? "" : " off"}"><span></span>${NOTIFY_KINDS.map(k => `<span class="nhead">${CHIP[k][0]}</span>`).join("")}
+      ${names.map(n => `<span class="nname" title="${esc(n)}">${esc(n)}</span>${NOTIFY_KINDS.map(k => chipHtml(n, k, last.toast[n][k])).join("")}`).join("")}</div>
+    <div class="note">꺼도 가공·알람 이력은 그대로 기록돼요</div>`;
+  pop.style.top = rc.bottom + 4 + "px";
+  pop.style.right = innerWidth - rc.right + "px";
+  pop.classList.add("show");
+  fitModal();
+}
+function closeNotifyMenu() {
+  $("npop").classList.remove("show");
+  fitModal();
+}
+$("b-bell").addEventListener("click", () => menuOpen() ? closeNotifyMenu() : openNotifyMenu());
+$("npop").addEventListener("click", e => {
+  const c = e.target.closest(".chip");
+  if (!c) return;
+  const on = c.classList.toggle("on");
+  last.toast[c.dataset.name][c.dataset.kind] = on;
+  setBell(last.notify, last.toast);
+  api().set_machine_notify(c.dataset.name, c.dataset.kind, on);
+});
+$("npop").addEventListener("change", async e => {
+  last.notify = await api().set_notify(e.target.checked);
+  setBell(last.notify, last.toast);
+  $("npop").querySelector(".ngrid").classList.toggle("off", !last.notify);
+});
+document.addEventListener("click", e => {   // 메뉴 밖을 누르면 닫기만 한다 (뒤에 있는 '해제' 버튼 등이 같이 눌리지 않게)
+  if (menuOpen() && !e.target.closest("#npop, #b-bell")) { closeNotifyMenu(); e.stopPropagation(); }
+}, true);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && menuOpen()) closeNotifyMenu(); });
 // Tailscale이 없는 PC: 📡를 흐리게 하고 누르면 안내만 (서버 시작은 파이썬 쪽에서도 거부)
 const NO_TAILSCALE = "이 PC에는 Tailscale이 설치돼 있지 않아 원격 모니터링을 쓸 수 없어요.\nTailscale을 설치·로그인하고 Funnel을 켠 뒤 다시 눌러 주세요.";
 function setTailscale(ok) {
@@ -356,6 +408,7 @@ $("b-close").addEventListener("click", () => api().hide());
 // ── 최소화(슬림) 모드 ──
 function setCompact(on) {
   compact = on; hideTip();
+  if (menuOpen()) closeNotifyMenu();
   document.body.classList.toggle("compact", on);
   requestAnimationFrame(() => { fitted = Math.ceil($("app").getBoundingClientRect().height); api().set_compact(on, fitted); });
 }
@@ -367,7 +420,7 @@ async function compactDrag() {
 // ── 툴팁 ──
 document.addEventListener("mouseover", e => {
   const t = e.target.closest("[data-tip]");
-  if (!t || compact) return hideTip();
+  if (!t || compact || menuOpen()) return hideTip();
   const tip = $("tip"), rc = t.getBoundingClientRect();
   tip.textContent = t.dataset.tip; tip.style.display = "block";
   const w = tip.offsetWidth;
@@ -390,9 +443,9 @@ function closeModal(ov) {
   ov.remove();
   fitModal();
 }
-function fitModal() {   // 창이 맨 위 모달보다 작으면 잠깐 늘림 (모달 내용이 바뀐 뒤에도 호출)
+function fitModal() {   // 창이 맨 위 모달·🔔 메뉴보다 작으면 잠깐 늘림 (모달 내용이 바뀐 뒤에도 호출)
   const top = $("modals").lastElementChild;
-  minHeight = top ? top.firstElementChild.offsetHeight + 40 : 0;
+  minHeight = Math.max(top ? top.firstElementChild.offsetHeight + 40 : 0, menuOpen() ? $("npop").getBoundingClientRect().bottom + 10 : 0);
   fitWindow();
 }
 function message(text) {
@@ -561,6 +614,7 @@ async function selftest() {
     if (i === 0) { await wait(300); await api().report("screenshot:open"); }
   }
   setCompact(true); await wait(500); await api().report("screenshot:compact"); setCompact(false); await wait(400);
+  openNotifyMenu(); await wait(300); await api().report("screenshot:notify"); closeNotifyMenu(); await wait(200);
   await openSettings(); await wait(300); await api().report("screenshot:settings");
   closeModal($("modals").lastElementChild); await wait(200);
   await openRemote(); await wait(300); await api().report("screenshot:remote");

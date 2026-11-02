@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 import pystray
 import webview
 
-VERSION = "v3.1"
+VERSION = "v3.2"
 # 자가 테스트: 실행 중인 앱과 함께 돌 수 있게 중복 실행 검사 생략, 이력은 임시 폴더, 토스트 끔
 SELFTEST = "--selftest" in sys.argv
 START_IN_TRAY = "--tray" in sys.argv   # 윈도우 자동 실행 시 '트레이로 숨겨서 시작' (startup.py가 붙임)
@@ -77,6 +77,7 @@ import webui                                                                 # n
 import startup                                                               # noqa: E402
 from webpush import PushSender                                               # noqa: E402
 import updater                                                               # noqa: E402
+from screen_guard import ScreenGuard                                         # noqa: E402
 
 WIDTH, COMPACT_WIDTH = 640, 240
 _user32 = ctypes.WinDLL("user32")
@@ -198,7 +199,10 @@ class Api:
 
     def status(self):
         a = self._app
-        return dict(a.poller.snapshot(), events=a.poller.pop_events(), update=a.updater.public())
+        a.guard.touch()
+        snap = a.poller.snapshot()
+        return dict(snap, events=a.poller.pop_events(), update=a.updater.public(),
+                    toast=a.notifier.toast.table([m["name"] for m in snap["machines"]]))
 
     def connect(self, ip):
         self._app.poller.request("connect", ip)
@@ -209,6 +213,9 @@ class Api:
     def set_notify(self, on):
         self._app.poller.notify_enabled = bool(on)   # 토스트만 끈다 (CSV 이력은 항상 기록)
         return self._app.poller.notify_enabled
+
+    def set_machine_notify(self, name, kind, on):
+        self._app.notifier.toast.set(str(name), kind, bool(on))   # 기계별 설정은 저장해서 다시 켜도 그대로
 
     # ── 원격 모니터링 ─────────────────────────────────────
     def remote_toggle(self):
@@ -388,8 +395,10 @@ class App:
             f"DN Solutions Machine Watcher {VERSION}", html=build_html(), js_api=self.api,
             width=WIDTH, height=322, frameless=True, easy_drag=False, background_color="#131316", min_size=(200, 60),
             hidden=START_IN_TRAY)   # 숨겨서 시작해도 화면(JS)은 돌아서 알람 팝업·장비 읽기는 그대로
+        self.guard = ScreenGuard(self)
         self.window.events.shown += self._on_shown
         self.window.events.closing += self._on_closing
+        self.window.events.loaded += self.guard.on_loaded
 
     def set_topmost(self, on):
         """항상 위 켜기/끄기. pywebview의 window.on_top은 다른 스레드에서 .NET 속성을 GIL을 쥔 채 바꿔
@@ -467,6 +476,7 @@ class App:
         self.poller.start()
         self.setup_tray()
         self.updater.start()
+        self.guard.start()
         if UPDATED:
             logger.info(f"{VERSION}(으)로 업데이트 완료")
         if UPDATED and not SELFTEST:
