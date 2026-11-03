@@ -189,6 +189,8 @@ class Poller(threading.Thread):
                                                      self.notify_enabled, d["alarms"], d["program"])
                 if res == "ALARM_POPUP":
                     self._event(type="alarm", name=m.name, alarms=d["alarms"])
+            else:   # 방금 끊겼다 — 알리지 않으면 다시 붙을 때 notifier가 RUN에서 막 멈춘 것으로 본다 (끝 시각이 재연결 시각이 됨)
+                self.notifier.check_and_notify(m.name, "OFFLINE", "00:00:00", False, self.notify_enabled)
         elif m.want_connected and time.monotonic() - getattr(m, "_retry", 0) > RETRY_SEC:
             # 절전 복귀 등으로 끊긴 경우 자동 재연결 — 이 스레드라서 3초 걸려도 화면은 안 멈춤
             m._retry = time.monotonic()

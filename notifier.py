@@ -31,6 +31,7 @@ MACRO_RE = re.compile(r"^O[89]\d{3}$")
 MINOR_SEC = 60
 ETA_KEEP_SEC = 30       # 예상 시각이 이만큼 어긋나기 전에는 그대로 둔다 (초 단위 흔들림으로 분이 왔다 갔다 하지 않게)
 ETA_HISTORY_DAYS = 90   # 직전 실행을 찾을 때 읽는 이력 파일 수
+LATE_DONE_SEC = 10 * 60 # 이만큼 넘게 끊겼다가 다시 붙었을 때 끝나 있던 가공은 완료 알림을 보내지 않는다 (밤새 꺼졌다 아침에 켤 때 등)
 
 
 def hms_sec(t):
@@ -246,20 +247,30 @@ class StatusNotifier:
         # 2. 가공 기록 — [v3.0] 프로그램 한 번(리셋될 때까지)을 한 줄로. 중간 멈춤(M00·M01·싱글 블록·피드 홀드)은
         #    묶는다. 예전엔 RUN에서 벗어날 때마다 '가공 완료'로 기록해 한 프로그램이 여러 줄로 쪼개졌고,
         #    장비 사이클 타임은 멈춰도 계속 누적되므로 줄마다 시작→끝과 사이클 타임이 맞지 않았다.
-        if not is_offline:
+        if is_offline:
+            if job and not job.get("lost"):
+                job["lost"] = now
+        else:
             running, was_running = "RUN" in current_status, "RUN" in prev["status"]
             cyc = hms_sec(cycle_time)
+            lost = job.pop("lost", None) if job else None
+            if lost:
+                job["late"] = (now - lost).total_seconds() >= LATE_DONE_SEC
             if running:
                 if job and not was_running and cyc + 2 < job["cyc"]:
                     self._finish_job(machine_name, job, enabled)   # 사이클 카운터가 0부터 다시 → 이전 프로그램은 끝난 것
                     job = None
                 if job is None:
                     job = {"start": now, "alarm": False, "program": None}
-                job.update(cyc=cyc, end=now, paused_at=None, pause_toast=False, program=job_program(job["program"], program))
+                job.update(cyc=cyc, end=now, paused_at=None, pause_toast=False, late=False, program=job_program(job["program"], program))
             if job and is_alarm:
                 job["alarm"] = True
             if job and not running:
-                if was_running:   # 멈춘 순간의 시각·사이클 타임이 이 가공의 끝 (리셋은 한참 뒤에 누를 수도 있음)
+                if lost:   # 끊긴 동안 멈췄다 — 끝은 다시 붙은 지금이 아니라 끊기기 전. 그 뒤로 더 돈 만큼(PC 절전 등 장비는 계속 돈 경우)만 더한다
+                    more = max(0, cyc - job["cyc"])
+                    job.update(cyc=job["cyc"] + more, end=min(now, job["end"] + datetime.timedelta(seconds=more)),
+                               paused_at=job["paused_at"] or now)
+                elif was_running:   # 멈춘 순간의 시각·사이클 타임이 이 가공의 끝 (리셋은 한참 뒤에 누를 수도 있음)
                     job.update(cyc=max(cyc, job["cyc"]), end=now, paused_at=now)
                 if current_status == RESET_STATUS:
                     self._finish_job(machine_name, job, enabled)
@@ -270,17 +281,18 @@ class StatusNotifier:
                     self.send_toast(f"⏸️ [작업 정지] {machine_name}",
                                     f"정지 시간: {job['paused_at'].strftime('%H:%M:%S')}\n가공 중간에 {PAUSE_TOAST_SEC}초 넘게 멈춰 있습니다.")
 
-        self.last_states[machine_name] = {"status": current_status, "alarm": is_alarm, "job": job}
+        # 끊김은 알람 해제가 아니다 (다시 붙을 때 같은 알람을 또 알리지 않게)
+        self.last_states[machine_name] = {"status": current_status, "alarm": prev["alarm"] if is_offline else is_alarm, "job": job}
         return popup_trigger
 
     def _finish_job(self, machine_name, job, enabled):
-        """가공 한 번을 CSV에 기록하고, 정상으로 끝났으면 가공 완료 알림 (알람으로 끝난 가공·짧은 가공은 기록만)"""
+        """가공 한 번을 CSV에 기록하고, 정상으로 끝났으면 가공 완료 알림 (알람으로 끝난 가공·짧은 가공·오래 끊겼다 다시 붙어서 안 가공은 기록만)"""
         cyc = job["cyc"]
         pause = max(0, int((job["end"] - job["start"]).total_seconds()) - cyc)   # 시작→끝 중 가공하지 않은 시간
         result = "알람" if job["alarm"] else "완료"
         self.log_to_csv(machine_name, [job["start"].strftime("%H:%M:%S"), job["end"].strftime("%H:%M:%S"),
                                        sec_hms(cyc), sec_hms(pause), job["program"] or "", result], job["end"])
-        if result != "완료" or is_minor(job["program"], cyc):
+        if result != "완료" or is_minor(job["program"], cyc) or job.get("late"):
             return
         if job["program"]:
             self.last_cycle[(machine_name, job["program"])] = cyc
